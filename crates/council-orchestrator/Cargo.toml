@@ -1,0 +1,29 @@
+[package]
+name = "council-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Council orchestrator server: Axum + WebSocket + Redis pub/sub + agent process manager."
+
+[[bin]]
+name = "council-orchestrator"
+path = "src/main.rs"
+
+[dependencies]
+council-core = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

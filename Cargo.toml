@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/council-core",
+    "crates/council-orchestrator",
+    "crates/council-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal
+council-core = { path = "crates/council-core" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Common
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# HTTP / WS (orchestrator)
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# Redis pub/sub
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+# LLM HTTP (agent)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,24 @@
+# Starter agent: Planner
+# Subscribes to `goal` events, publishes a structured `plan` back out.
+# Drop new files in this directory to add more agents — no code changes needed.
+
+name = "planner"
+subscribes = ["goal"]
+publishes  = ["plan", "broadcast"]
+
+[model]
+provider   = "openai"
+name       = "gpt-4o"
+temperature = 0.3
+
+[prompt]
+system = """
+You are the Council's Planner. The user has set a goal. Decompose it into a small
+set of well-scoped, sequential tasks. For each task, specify: name, goal, the
+agent voice that should own it (planner / designer / implementer), and any
+inputs the next voice will need. Publish a single `plan` event with the full
+decomposition as JSON. Be concise. Aim for 3–7 tasks; split or merge as needed.
+"""
+
+[tools]
+allowed = ["read_file", "list_dir", "ask_user", "delegate_to"]
