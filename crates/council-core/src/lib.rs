@@ -5,12 +5,14 @@
 //! contract has a single source of truth.
 
 pub mod agent;
+pub mod bus;
 pub mod error;
 pub mod event;
 pub mod session;
 pub mod tool;
 
 pub use agent::{AgentSpec, ModelConfig, PromptConfig, ToolsConfig};
+pub use bus::{channels, EventEnvelope, EVENTS_CHANNEL};
 pub use error::{CoreError, Result};
 pub use event::{AgentLifecycle, Event, EventId, EventKind, FileChangeKind};
 pub use session::{Session, SessionId, SessionStatus};
