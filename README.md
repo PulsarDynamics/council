@@ -2,6 +2,8 @@
 
 A self-contained, multi-agent orchestration system. Agents that plan, design, and implement, talk to each other, and stream everything live to a web UI.
 
+**Repo**: <https://github.com/PulsarDynamics/council>
+
 > **Why "Council"?** Agents deliberate, delegate, and contribute. Any agent can call any other via the `delegate_to` tool, so the topology is open — more roundtable than orchestra. Each starter agent is a voice around the table: a planner, a designer, an implementer.
 
 ## Stack

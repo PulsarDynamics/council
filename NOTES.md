@@ -5,7 +5,7 @@ Full context dump for cold-starting a fresh session on this project.
 ## What it is
 A self-contained, multi-agent orchestration system in **Rust + Svelte** with **Redis** as the message bus. Agents that plan, design, and implement based on plans/docs, talk to each other, and you can watch everything live in the UI.
 
-Project name: **Council** (previously informally "Agent Orchestra"). Directory: `~/Desktop/gitlab-repos/council/`.
+Project name: **Council** (previously informally "Agent Orchestra"). Directory: `~/Desktop/gitlab-repos/council/`. **Remote**: <https://github.com/PulsarDynamics/council> (public, org-owned).
 
 ## Stack & key decisions
 - **Backend**: Rust (Axum + Tokio), single binary with `serve` and `agent` subcommands
