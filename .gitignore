@@ -1,0 +1,49 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS tracked for binaries (Council is a binary crate).
+# If a future crate becomes a library, override locally with `cargo update --workspace` hygiene.
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# SvelteKit
+.svelte-kit/
+.vercel/
+.netlify/
+build/
+dist/
+
+# Vite
+.vite/
+*.local
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local-only
+*.local
+.cache/
+.tmp/
+tmp/
