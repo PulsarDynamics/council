@@ -43,7 +43,7 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # LLM HTTP (agent)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # File watcher (agent)
 notify = "6"
@@ -54,6 +54,10 @@ url = "2"
 
 # Memory tool (agent)
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Async stream utilities (agent — SSE bridge in default LlmProvider::stream)
+async-stream = "0.3"
+bytes = "1"
 
 # Observability
 tracing = "0.1"

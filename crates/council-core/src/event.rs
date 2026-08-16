@@ -38,6 +38,12 @@ pub enum EventKind {
     UserMessage { content: String },
     /// A message emitted by an agent into the conversation.
     AgentMessage { agent: String, content: String },
+    /// An incremental text delta from a streaming agent response. The
+    /// final, fully-assembled message is still published as an
+    /// `AgentMessage` for persistence and non-streaming consumers.
+    /// The UI should append the delta to its in-progress buffer for
+    /// the (session_id, agent) pair keyed by the surrounding `Event`.
+    AgentMessageDelta { agent: String, delta: String },
     /// An agent's intermediate reasoning (shown collapsed in the UI by default).
     AgentThinking { agent: String, content: String },
     /// An agent invoked a tool.

@@ -34,6 +34,15 @@
 					tag: 'bg-sky-500/15',
 					tagText: 'text-sky-200'
 				};
+			case 'agent_message_delta':
+				// Deltas are filtered out of the rendered list; the case
+				// exists only to keep the union exhaustive.
+				return {
+					border: 'border-l-sky-700',
+					bg: 'bg-sky-950/10',
+					tag: 'bg-sky-700/15',
+					tagText: 'text-sky-300/80'
+				};
 			case 'agent_thinking':
 				return {
 					border: 'border-l-sky-700',

@@ -11,6 +11,12 @@
 pub mod agent_loop;
 pub mod providers;
 pub mod registry;
+pub mod sse;
+
+#[cfg(test)]
+mod agent_loop_stream_test;
+#[cfg(test)]
+mod providers_stream_test;
 
 pub use registry::ProviderRegistry;
 
@@ -101,6 +107,37 @@ pub struct CompletionResponse {
     pub stop_reason: StopReason,
 }
 
+/// One chunk yielded by a provider's `stream()` method.
+///
+/// Providers with native streaming emit zero or more `Text` deltas
+/// followed by exactly one `Done` carrying the final assembled
+/// response (so the LLM loop doesn't have to re-call `complete()`
+/// to learn about tool calls or token usage).
+///
+/// The default trait impl calls `complete()` and emits a single
+/// `Done` with the assembled response, so a provider that doesn't
+/// override `stream()` still works.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// A piece of incremental text from the assistant. The loop is
+    /// responsible for accumulation; the chunk size is provider-
+    /// dependent (a single token, a few tokens, or a whole sentence).
+    Text(String),
+    /// Stream is finished. `content` is the fully-assembled text
+    /// (may be `None` if the response was tool-only); `tool_calls`
+    /// and `usage` are the final structured fields.
+    Done {
+        content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        stop_reason: StopReason,
+    },
+}
+
+pub type CompletionStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamChunk, LlmError>> + Send>>;
+
 /// Configuration for one LLM provider. Loaded from env (built-ins) or from
 /// the user's settings (custom). The agent holds one `ProviderConfig` per
 /// provider it knows about, indexed by name.
@@ -142,4 +179,17 @@ pub trait LlmProvider: Send + Sync {
 
     /// Execute one completion. Returns the normalized response.
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError>;
+
+    /// Streaming variant. Each provider implements this directly because
+    /// the returned stream must be `'static` (it lives independently of
+    /// `&self`); implementations clone the internal `reqwest::Client`
+    /// (which is `Arc`-backed) and own all request data so no borrow of
+    /// `self` outlives the stream construction.
+    ///
+    /// The contract: emit zero or more `Text` deltas as the upstream API
+    /// produces them, then exactly one `Done` with the final assembled
+    /// response (content + tool_calls + token usage). The LLM loop uses
+    /// the `Done` to decide whether to run tools (matching the old
+    /// `complete()` behavior) and to record the `LlmCall` event.
+    fn stream(&self, req: CompletionRequest) -> CompletionStream;
 }

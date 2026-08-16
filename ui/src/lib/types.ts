@@ -12,6 +12,7 @@ export type SessionStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type EventKind =
 	| { type: 'user_message'; content: string }
 	| { type: 'agent_message'; agent: string; content: string }
+	| { type: 'agent_message_delta'; agent: string; delta: string }
 	| { type: 'agent_thinking'; agent: string; content: string }
 	| { type: 'tool_call'; agent: string; tool: string; args: unknown }
 	| {

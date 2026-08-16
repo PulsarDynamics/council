@@ -191,6 +191,8 @@ export function eventKindLabel(event: Event): string {
 			return 'user';
 		case 'agent_message':
 			return k.agent;
+		case 'agent_message_delta':
+			return `${k.agent} (streaming)`;
 		case 'agent_thinking':
 			return `${k.agent} (thinking)`;
 		case 'tool_call':

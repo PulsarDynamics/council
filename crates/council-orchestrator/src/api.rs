@@ -132,6 +132,17 @@ pub async fn persist_event(
     state: &AppState,
     envelope: &EventEnvelope,
 ) -> Result<(), String> {
+    // Streaming deltas are live-UI only — a session can produce hundreds
+    // per turn, and the canonical `AgentMessage` lands on the same
+    // channel right after. Persisting deltas would bloat the history
+    // endpoint and the per-session Redis list with no benefit (the
+    // assembled message is already there).
+    if matches!(
+        envelope.event.kind,
+        council_core::EventKind::AgentMessageDelta { .. }
+    ) {
+        return Ok(());
+    }
     use redis::AsyncCommands;
     let mut conn = state.bus.connection_clone().await;
     let bytes = envelope.encode().map_err(|e| format!("encode: {e}"))?;

@@ -13,13 +13,14 @@ use chrono::Utc;
 use council_core::{
     AgentSpec, Event, EventEnvelope, EventKind, Tool as ToolTrait, ToolContext,
 };
+use futures::StreamExt;
 use serde_json::json;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::{
     registry::load_config, ChatMessage, ChatRole, CompletionRequest, LlmError, LlmProvider,
-    ProviderRegistry, StopReason, ToolCall, ToolSpec,
+    ProviderRegistry, StopReason, StreamChunk, ToolCall, ToolSpec,
 };
 
 /// Max LLM iterations per incoming event. Prevents runaway loops if the
@@ -109,24 +110,89 @@ impl AgentLoop {
                 tools: tool_specs.clone(),
             };
 
-            let resp = match provider.complete(req).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = bus
-                        .publish(&EventEnvelope::new(
-                            "broadcast",
-                            Event::new(
-                                trigger.session_id,
-                                EventKind::Error {
-                                    source: self.spec.name.clone(),
-                                    message: format!("llm: {e}"),
-                                },
-                            ),
-                        ))
-                        .await;
-                    return Err(e);
+            // Drive the provider's streaming response. Each `Text` chunk
+            // becomes an `AgentMessageDelta` event for the UI to append;
+            // the final `Done` carries the assembled content + tool calls
+            // + token usage, which we use the same way we used to use
+            // `complete()`'s return value.
+            let mut stream = provider.stream(req);
+            let mut accumulated = String::new();
+            let mut prompt_tokens: u32 = 0;
+            let mut completion_tokens: u32 = 0;
+            let mut stop_reason = StopReason::EndTurn;
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            let mut stream_failed = false;
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(StreamChunk::Text(delta)) => {
+                        if delta.is_empty() {
+                            continue;
+                        }
+                        accumulated.push_str(&delta);
+                        // Fan out as a delta event so the UI can render
+                        // token-by-token.
+                        let _ = bus
+                            .publish(&EventEnvelope::new(
+                                &self.output_channel(),
+                                Event::new(
+                                    trigger.session_id,
+                                    EventKind::AgentMessageDelta {
+                                        agent: self.spec.name.clone(),
+                                        delta,
+                                    },
+                                ),
+                            ))
+                            .await;
+                    }
+                    Ok(StreamChunk::Done {
+                        content,
+                        tool_calls: tc,
+                        prompt_tokens: pt,
+                        completion_tokens: ct,
+                        stop_reason: sr,
+                    }) => {
+                        // The provider's `Done` carries the final state.
+                        // If no text deltas were emitted (e.g. tool-only
+                        // response, or a provider that fell back to the
+                        // non-streaming `complete()`), `accumulated` is
+                        // empty — in that case use `content` as the
+                        // authoritative text.
+                        if accumulated.is_empty() {
+                            if let Some(c) = content {
+                                accumulated = c;
+                            }
+                        }
+                        tool_calls = tc;
+                        prompt_tokens = pt;
+                        completion_tokens = ct;
+                        stop_reason = sr;
+                        break;
+                    }
+                    Err(e) => {
+                        // Surface the error and bail out of the loop.
+                        let _ = bus
+                            .publish(&EventEnvelope::new(
+                                "broadcast",
+                                Event::new(
+                                    trigger.session_id,
+                                    EventKind::Error {
+                                        source: self.spec.name.clone(),
+                                        message: format!("llm (stream): {e}"),
+                                    },
+                                ),
+                            ))
+                            .await;
+                        stream_failed = true;
+                        break;
+                    }
                 }
-            };
+            }
+
+            if stream_failed {
+                return Err(LlmError::Provider("llm stream failed".into()));
+            }
+
             let elapsed = started.elapsed();
 
             // Publish the LLM call stats.
@@ -138,8 +204,8 @@ impl AgentLoop {
                         EventKind::LlmCall {
                             agent: self.spec.name.clone(),
                             model: model.clone(),
-                            prompt_tokens: resp.prompt_tokens,
-                            completion_tokens: resp.completion_tokens,
+                            prompt_tokens,
+                            completion_tokens,
                             duration_ms: elapsed.as_millis() as u64,
                         },
                     ),
@@ -149,51 +215,51 @@ impl AgentLoop {
             info!(
                 agent = %self.spec.name,
                 iteration,
-                prompt = resp.prompt_tokens,
-                completion = resp.completion_tokens,
+                prompt = prompt_tokens,
+                completion = completion_tokens,
                 elapsed_ms = elapsed.as_millis() as u64,
-                stop = ?resp.stop_reason,
+                stop = ?stop_reason,
                 "llm"
             );
 
-            // If the LLM produced content, publish it as AgentMessage and
-            // append to the history.
-            if let Some(content) = &resp.content {
-                if !content.is_empty() {
-                    let _ = bus
-                        .publish(&EventEnvelope::new(
-                            &self.output_channel(),
-                            Event::new(
-                                trigger.session_id,
-                                EventKind::AgentMessage {
-                                    agent: self.spec.name.clone(),
-                                    content: content.clone(),
-                                },
-                            ),
-                        ))
-                        .await;
-                    messages.push(ChatMessage {
-                        role: ChatRole::Assistant,
-                        content: content.clone(),
-                        tool_call_id: None,
-                        tool_calls: if resp.tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(resp.tool_calls.clone())
-                        },
-                    });
-                }
-            } else if !resp.tool_calls.is_empty() {
+            // If the LLM produced content, publish the FINAL assembled
+            // AgentMessage. Deltas already went out as they arrived; this
+            // canonical version lands in the persistence store and gives
+            // non-streaming consumers (history, exports) a stable record.
+            if !accumulated.is_empty() {
+                let _ = bus
+                    .publish(&EventEnvelope::new(
+                        &self.output_channel(),
+                        Event::new(
+                            trigger.session_id,
+                            EventKind::AgentMessage {
+                                agent: self.spec.name.clone(),
+                                content: accumulated.clone(),
+                            },
+                        ),
+                    ))
+                    .await;
+                messages.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: accumulated,
+                    tool_call_id: None,
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls.clone())
+                    },
+                });
+            } else if !tool_calls.is_empty() {
                 // No text, but tool calls — record the assistant turn.
                 messages.push(ChatMessage {
                     role: ChatRole::Assistant,
                     content: String::new(),
                     tool_call_id: None,
-                    tool_calls: Some(resp.tool_calls.clone()),
+                    tool_calls: Some(tool_calls.clone()),
                 });
             }
 
-            match resp.stop_reason {
+            match stop_reason {
                 StopReason::EndTurn | StopReason::MaxTokens => {
                     return Ok(());
                 }
@@ -203,7 +269,7 @@ impl AgentLoop {
                 StopReason::ToolUse => {
                     // Run the tool calls, publish events, append to history, continue.
                     let mut tool_results: Vec<ChatMessage> = Vec::new();
-                    for call in &resp.tool_calls {
+                    for call in &tool_calls {
                         let result = self.execute_tool(call, &tool_ctx, bus).await;
                         tool_results.push(result);
                     }

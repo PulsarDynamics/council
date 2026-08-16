@@ -55,6 +55,10 @@ impl SessionState {
                 EventKind::AgentMessage { agent, content } => {
                     format!("{agent}: {}", truncate(content, 240))
                 }
+                // Deltas are streaming noise — the final AgentMessage
+                // for the same turn will land in this dump too, so we
+                // skip deltas here.
+                EventKind::AgentMessageDelta { .. } => continue,
                 EventKind::AgentThinking { agent, .. } => {
                     format!("{agent} (thinking)")
                 }
