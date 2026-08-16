@@ -4,6 +4,7 @@
 	import AgentCard from '$lib/components/AgentCard.svelte';
 	import GoalInput from '$lib/components/GoalInput.svelte';
 	import EventStream from '$lib/components/EventStream.svelte';
+	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 	import { agents as starterAgents } from '$lib/agents';
 	import { submitGoal, subscribeToEvents, type StreamSource } from '$lib/api';
 	import type { AgentLifecycle, EventEnvelope } from '$lib/types';
@@ -64,9 +65,17 @@
 	function clearSession() {
 		activeSessionId = null;
 	}
+
+	let settingsOpen = $state(false);
 </script>
 
-<Header stream={streamSource} sessionId={activeSessionId} />
+<Header
+	stream={streamSource}
+	sessionId={activeSessionId}
+	onOpenSettings={() => (settingsOpen = true)}
+/>
+
+<SettingsPanel open={settingsOpen} onClose={() => (settingsOpen = false)} />
 
 <main class="mx-auto flex h-[calc(100vh-3.5rem)] max-w-7xl gap-4 px-4 py-4">
 	<aside class="hidden w-64 shrink-0 flex-col gap-3 lg:flex">

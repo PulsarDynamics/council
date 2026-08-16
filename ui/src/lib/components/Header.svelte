@@ -5,8 +5,9 @@
 	interface Props {
 		stream: StreamSource | 'connecting';
 		sessionId: string | null;
+		onOpenSettings?: () => void;
 	}
-	let { stream, sessionId }: Props = $props();
+	let { stream, sessionId, onOpenSettings }: Props = $props();
 </script>
 
 <header
@@ -40,6 +41,16 @@
 			<StatusPill status="mock" label="mock stream" />
 		{:else}
 			<StatusPill status="disconnected" label="connecting…" />
+		{/if}
+		{#if onOpenSettings}
+			<button
+				type="button"
+				class="hover:bg-base-300/60 text-base-content/70 hover:text-base-content ml-1 rounded-md border border-base-300/60 px-2 py-0.5 text-xs"
+				onclick={onOpenSettings}
+				aria-label="Open settings"
+			>
+				settings
+			</button>
 		{/if}
 	</div>
 </header>

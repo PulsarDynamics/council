@@ -1,0 +1,5 @@
+// This file is a no-op placeholder, kept only to mark where a file
+// with the literal name "loop.rs" was briefly placed before being
+// renamed to agent_loop.rs (Rust reserves `loop` as a keyword).
+//
+// The actual module lives in agent_loop.rs. See that file.
