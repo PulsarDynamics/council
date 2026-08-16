@@ -1,64 +1,98 @@
 <script lang="ts">
-	import { agents } from '$lib/agents';
+	import { onDestroy, onMount } from 'svelte';
+	import Header from '$lib/components/Header.svelte';
+	import AgentCard from '$lib/components/AgentCard.svelte';
+	import GoalInput from '$lib/components/GoalInput.svelte';
+	import EventStream from '$lib/components/EventStream.svelte';
+	import { agents as starterAgents } from '$lib/agents';
+	import { submitGoal, subscribeToEvents, type StreamSource } from '$lib/api';
+	import type { AgentLifecycle, EventEnvelope } from '$lib/types';
 
-	let goal = $state('');
-	let submitting = $state(false);
+	let events: EventEnvelope[] = $state([]);
+	let activeSessionId: string | null = $state(null);
+	let streamSource: StreamSource | 'connecting' = $state('connecting');
 
-	function submit(event: SubmitEvent) {
-		event.preventDefault();
-		// Scaffold: the real submit will POST to /sessions on the orchestrator,
-		// which will fan out a `goal` event on Redis to all subscribed agents.
-		submitting = true;
-		console.info('goal submitted (scaffold — no orchestrator wired yet):', goal);
-		setTimeout(() => (submitting = false), 400);
+	// Track the latest status per agent (derived from agent_status events).
+	const agentStatus: Record<string, AgentLifecycle> = $state(
+		Object.fromEntries(starterAgents.map((a) => [a.name.toLowerCase(), 'idle' as AgentLifecycle]))
+	);
+
+	let streamHandle: ReturnType<typeof subscribeToEvents> | null = null;
+
+	function handleEvent(env: EventEnvelope) {
+		events = [...events, env];
+		const k = env.event.kind;
+		if (k.type === 'agent_status') {
+			agentStatus[k.agent.toLowerCase()] = k.status;
+		}
+		// In mock mode, adopt the first event's session_id as the active one
+		// so the stream filter doesn't hide everything.
+		if (!activeSessionId && env.event.session_id) {
+			activeSessionId = env.event.session_id;
+		}
+	}
+
+	onMount(() => {
+		streamHandle = subscribeToEvents(
+			(env) => handleEvent(env),
+			(s) => (streamSource = s)
+		);
+	});
+
+	onDestroy(() => {
+		streamHandle?.close();
+	});
+
+	async function handleSubmit(goal: string) {
+		// In mock mode, the form is decorative — the mock stream runs on its own.
+		if (streamSource === 'mock') {
+			// Clear any previous session so a new one starts.
+			activeSessionId = null;
+			events = [];
+			// The first event from the new mock run will set activeSessionId.
+			return;
+		}
+		try {
+			const res = await submitGoal(goal);
+			activeSessionId = res.session_id;
+		} catch (err) {
+			console.error('submit failed', err);
+			alert(`Submit failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	function clearSession() {
+		activeSessionId = null;
 	}
 </script>
 
-<main class="mx-auto flex min-h-screen max-w-3xl flex-col gap-10 px-6 py-16">
-	<header class="space-y-2">
-		<h1 class="text-4xl font-semibold tracking-tight">Council</h1>
-		<p class="text-base-content/70 text-lg">
-			A roundtable of agents that plan, design, and implement. Set a goal — the Council
-			deliberates.
-		</p>
-	</header>
+<Header stream={streamSource} sessionId={activeSessionId} />
 
-	<form onsubmit={submit} class="flex flex-col gap-3">
-		<label for="goal" class="text-sm font-medium">Goal</label>
-		<textarea
-			id="goal"
-			bind:value={goal}
-			rows="4"
-			placeholder="e.g. add a Stripe webhook handler that records failed payments in the audit log"
-			class="border-base-300 focus:border-primary focus:ring-primary rounded-md border bg-transparent px-3 py-2 text-sm focus:ring-1 focus:outline-none"
-		></textarea>
-		<button
-			type="submit"
-			disabled={!goal.trim() || submitting}
-			class="bg-primary text-primary-content hover:bg-primary/90 self-start rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-		>
-			{submitting ? 'Submitting…' : 'Send to Council'}
-		</button>
-	</form>
+<main class="mx-auto flex h-[calc(100vh-3.5rem)] max-w-7xl gap-4 px-4 py-4">
+	<aside class="hidden w-64 shrink-0 flex-col gap-3 lg:flex">
+		<h2 class="text-base-content/70 text-xs font-semibold tracking-wide uppercase">Voices</h2>
+		{#each starterAgents as agent (agent.name)}
+			<AgentCard {agent} status={agentStatus[agent.name.toLowerCase()] ?? 'idle'} />
+		{/each}
+		<div class="text-base-content/40 mt-auto text-[11px] leading-relaxed">
+			Each voice subscribes to channels and publishes results. The orchestrator routes events over
+			Redis pub/sub.
+		</div>
+	</aside>
 
-	<section class="space-y-3">
-		<h2 class="text-sm font-semibold tracking-wide uppercase">Voices around the table</h2>
-		<ul class="divide-base-300 border-base-300 divide-y rounded-md border">
-			{#each agents as agent (agent.name)}
-				<li class="flex items-center justify-between px-4 py-3 text-sm">
-					<div>
-						<div class="font-medium">{agent.name}</div>
-						<div class="text-base-content/60 text-xs">{agent.role}</div>
-					</div>
-					<div class="text-base-content/60 font-mono text-xs">
-						subscribes: {agent.subscribes.join(', ')}
-					</div>
-				</li>
-			{/each}
-		</ul>
+	<section class="flex min-w-0 flex-1 flex-col gap-3">
+		<div class="flex items-center justify-between gap-2">
+			<GoalInput onSubmit={handleSubmit} />
+			{#if activeSessionId}
+				<button
+					type="button"
+					class="text-base-content/50 hover:text-base-content/80 self-start rounded-md px-2 py-1 text-xs underline"
+					onclick={clearSession}
+				>
+					new session
+				</button>
+			{/if}
+		</div>
+		<EventStream {events} {activeSessionId} />
 	</section>
-
-	<footer class="text-base-content/50 mt-auto text-xs">
-		Scaffold build — live event stream and WebSocket land in cycle 2.
-	</footer>
 </main>

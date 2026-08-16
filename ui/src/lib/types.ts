@@ -43,6 +43,13 @@ export interface Event {
 	timestamp: string; // ISO 8601
 }
 
+/// What goes on the wire: the event plus a routing channel.
+/// Mirror of council_core::EventEnvelope.
+export interface EventEnvelope {
+	channel: string;
+	event: Event;
+}
+
 export interface Session {
 	id: SessionId;
 	goal: string;
