@@ -5,6 +5,7 @@
 	import GoalInput from '$lib/components/GoalInput.svelte';
 	import EventStream from '$lib/components/EventStream.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+	import SwapProviderModal from '$lib/components/SwapProviderModal.svelte';
 	import { agents as starterAgents } from '$lib/agents';
 	import { submitGoal, subscribeToEvents, type StreamSource } from '$lib/api';
 	import type { AgentLifecycle, EventEnvelope } from '$lib/types';
@@ -67,6 +68,7 @@
 	}
 
 	let settingsOpen = $state(false);
+	let swapTarget: string | null = $state(null);
 </script>
 
 <Header
@@ -77,11 +79,21 @@
 
 <SettingsPanel open={settingsOpen} onClose={() => (settingsOpen = false)} />
 
+<SwapProviderModal
+	open={swapTarget !== null}
+	agent={swapTarget}
+	onClose={() => (swapTarget = null)}
+/>
+
 <main class="mx-auto flex h-[calc(100vh-3.5rem)] max-w-7xl gap-4 px-4 py-4">
 	<aside class="hidden w-64 shrink-0 flex-col gap-3 lg:flex">
 		<h2 class="text-base-content/70 text-xs font-semibold tracking-wide uppercase">Voices</h2>
 		{#each starterAgents as agent (agent.name)}
-			<AgentCard {agent} status={agentStatus[agent.name.toLowerCase()] ?? 'idle'} />
+			<AgentCard
+				{agent}
+				status={agentStatus[agent.name.toLowerCase()] ?? 'idle'}
+				onSwap={() => (swapTarget = agent.name.toLowerCase())}
+			/>
 		{/each}
 		<div class="text-base-content/40 mt-auto text-[11px] leading-relaxed">
 			Each voice subscribes to channels and publishes results. The orchestrator routes events over

@@ -6,8 +6,9 @@
 	interface Props {
 		agent: AgentSummary;
 		status: AgentLifecycle;
+		onSwap?: () => void;
 	}
-	let { agent, status }: Props = $props();
+	let { agent, status, onSwap }: Props = $props();
 
 	const accent: Record<string, string> = {
 		planner: 'border-l-sky-400',
@@ -30,4 +31,13 @@
 		<span class="bg-base-300/50 rounded px-1.5 py-0.5">in: {agent.subscribes.join(', ')}</span>
 		<span class="bg-base-300/50 rounded px-1.5 py-0.5">out: {agent.publishes.join(', ')}</span>
 	</div>
+	{#if onSwap}
+		<button
+			type="button"
+			class="text-base-content/60 hover:text-base-content mt-2 text-[10px] underline"
+			onclick={onSwap}
+		>
+			swap provider mid-flight
+		</button>
+	{/if}
 </article>

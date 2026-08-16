@@ -60,6 +60,8 @@ pub async fn serve(bind: SocketAddr) -> Result<()> {
         .route("/version", get(api::version))
         .route("/api/agents", get(api::list_agents))
         .route("/api/sessions", post(api::submit_goal))
+        .route("/api/control/swap", post(api::swap_provider))
+        .route("/api/control/reset", post(api::reset_session))
         .route("/ws", get(ws::ws_handler))
         .with_state(state);
 

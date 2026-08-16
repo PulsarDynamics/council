@@ -27,6 +27,44 @@ export async function submitGoal(goal: string): Promise<SubmitGoalResponse> {
 	return res.json();
 }
 
+export interface SwapProviderRequest {
+	agent: string;
+	provider: string;
+	model?: string;
+	reason?: string;
+}
+
+export interface SwapProviderResponse {
+	dispatched: boolean;
+	message: string;
+}
+
+export async function swapProvider(req: SwapProviderRequest): Promise<SwapProviderResponse> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/control/swap`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(req)
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`swap failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
+export async function resetAgent(agent: string): Promise<{ dispatched: boolean }> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/control/reset`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ agent })
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`reset failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
 export type StreamSource = 'orchestrator' | 'mock';
 
 export interface StreamHandle {

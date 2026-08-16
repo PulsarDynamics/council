@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod bus;
+pub mod control;
 pub mod error;
 pub mod event;
 pub mod session;
@@ -13,6 +14,7 @@ pub mod tool;
 
 pub use agent::{AgentSpec, ModelConfig, PromptConfig, ToolsConfig};
 pub use bus::{channels, EventEnvelope, EVENTS_CHANNEL};
+pub use control::{ControlEnvelope, ControlEvent, CONTROL_CHANNEL};
 pub use error::{CoreError, Result};
 pub use event::{AgentLifecycle, Event, EventId, EventKind, FileChangeKind};
 pub use session::{Session, SessionId, SessionStatus};

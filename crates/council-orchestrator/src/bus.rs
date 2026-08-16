@@ -2,7 +2,7 @@
 //! subscribe side of `EVENTS_CHANNEL`. Envelopes are JSON over the wire.
 
 use anyhow::{Context, Result};
-use council_core::EventEnvelope;
+use council_core::{ControlEnvelope, EventEnvelope, CONTROL_CHANNEL};
 use futures::StreamExt;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
@@ -33,6 +33,19 @@ impl Bus {
             .await
             .context("redis PUBLISH")?;
         debug!(channel = %envelope.channel, event_id = %envelope.event.id, "published");
+        Ok(())
+    }
+
+    /// Publish a control envelope on the control channel. The agent
+    /// subscribes to this separately from the events channel.
+    pub async fn publish_control(&self, envelope: &ControlEnvelope) -> Result<()> {
+        let bytes = envelope.encode().context("serializing control envelope")?;
+        let mut conn = self.conn.clone();
+        let _: i64 = conn
+            .publish(CONTROL_CHANNEL, bytes)
+            .await
+            .context("redis PUBLISH control")?;
+        debug!(control = ?envelope.event, "published control");
         Ok(())
     }
 
