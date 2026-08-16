@@ -268,16 +268,48 @@ pub struct SwapOutcome {
 
 /// Look up a provider by name. The agent process holds a registry; we
 /// re-resolve here so a hot-swap to a newly-added custom is possible
-/// once the env is set. (For the MVP, we just return the three
-/// built-ins; custom lookup via env comes next.)
+/// once the orchestrator has written it to `providers.toml`.
+///
+/// Order:
+/// 1. The three built-ins (openai, openai-responses, anthropic) — these
+///    ignore the `base_url` etc. that might be in the file and use the
+///    canonical defaults; env vars (`OPENAI_API_KEY` /
+///    `ANTHROPIC_API_KEY` / `OPENAI_BASE_URL`) still apply.
+/// 2. A custom entry in `providers.toml` — read each call so the UI can
+///    add/remove providers without restarting the agent.
 fn lookup_provider(name: &str) -> Option<Arc<dyn LlmProvider>> {
     use crate::llm::providers::{AnthropicProvider, OpenAiChatProvider, OpenAiResponsesProvider};
-    match name {
-        "openai" | "openai-chat" => Some(Arc::new(OpenAiChatProvider::new())),
-        "openai-responses" => Some(Arc::new(OpenAiResponsesProvider::new())),
-        "anthropic" => Some(Arc::new(AnthropicProvider::new())),
-        _ => None,
+
+    // Built-ins first.
+    if matches!(name, "openai" | "openai-chat") {
+        return Some(Arc::new(OpenAiChatProvider::new()));
     }
+    if name == "openai-responses" {
+        return Some(Arc::new(OpenAiResponsesProvider::new()));
+    }
+    if name == "anthropic" {
+        return Some(Arc::new(AnthropicProvider::new()));
+    }
+
+    // Then custom entries from providers.toml. The agent applies the
+    // file's base_url to the appropriate built-in impl, and pushes the
+    // api key into env so the impl picks it up at call time.
+    let path = council_core::default_providers_path();
+    let file = council_core::ProvidersFile::load(&path);
+    let entry = file.providers.get(name)?.clone();
+    if !entry.api_key.is_empty() {
+        std::env::set_var(
+            format!("COUNCIL_PROVIDER_{}_API_KEY", name.to_uppercase()),
+            &entry.api_key,
+        );
+    }
+    let provider: Arc<dyn LlmProvider> = match entry.kind {
+        council_core::ProviderKind::AnthropicMessages => {
+            Arc::new(AnthropicProvider::with_base_url(entry.base_url))
+        }
+        _ => Arc::new(OpenAiChatProvider::with_base_url(entry.base_url)),
+    };
+    Some(provider)
 }
 
 async fn pick_recent_session(sessions: &SessionMap) -> SessionId {

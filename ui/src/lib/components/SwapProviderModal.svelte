@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { BUILT_INS, getCustoms, kindLabel, type ProviderConfig } from '$lib/providers';
+	import { BUILT_INS, fetchProviders, kindLabel, type ProviderConfig } from '$lib/providers';
 	import { swapProvider } from '$lib/api';
 
 	interface Props {
@@ -13,9 +13,21 @@
 	let model: string = $state('');
 	let reason: string = $state('');
 	let submitting = $state(false);
-	let errorMsg: string = $state('');
+	let errorMsg = $state('');
 
-	const customs: ProviderConfig[] = $derived(open ? getCustoms() : []);
+	let customs: ProviderConfig[] = $state([]);
+
+	$effect(() => {
+		if (open) {
+			fetchProviders()
+				.then((v) => {
+					customs = Object.values(v.providers);
+				})
+				.catch(() => {
+					customs = [];
+				});
+		}
+	});
 
 	const allProviders: Array<{ name: string; kind: string; label: string; defaultModel: string }> = $derived(
 		[

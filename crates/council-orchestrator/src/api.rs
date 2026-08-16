@@ -8,8 +8,16 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use council_core::{channels, ControlEnvelope, ControlEvent, Event, EventEnvelope, Session};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use council_core::{
+    channels, default_providers_path, ControlEnvelope, ControlEvent, Event, EventEnvelope,
+    ProviderEntry, ProviderKind, ProvidersFile, Session,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -99,6 +107,88 @@ pub async fn submit_goal(
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+// ---------------- providers file ----------------
+
+/// Return the on-disk path of the providers file plus its current contents.
+#[derive(Debug, Serialize)]
+pub struct ProvidersView {
+    pub path: String,
+    pub providers: std::collections::BTreeMap<String, ProviderEntry>,
+}
+
+pub async fn get_providers() -> Result<Json<ProvidersView>, (StatusCode, String)> {
+    let path = default_providers_path();
+    let f = ProvidersFile::load(&path);
+    Ok(Json(ProvidersView {
+        path: path.to_string_lossy().to_string(),
+        providers: f.providers,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpsertProviderRequest {
+    pub name: String,
+    pub kind: ProviderKind,
+    pub base_url: String,
+    pub api_key: String,
+    pub default_model: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpsertProviderResponse {
+    pub path: String,
+    pub wrote: bool,
+}
+
+pub async fn upsert_provider(
+    Json(req): Json<UpsertProviderRequest>,
+) -> Result<Json<UpsertProviderResponse>, (StatusCode, String)> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "name is required".into()));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "name must be alphanumeric, _, or -".into(),
+        ));
+    }
+    let path = default_providers_path();
+    let mut f = ProvidersFile::load(&path);
+    f.upsert(
+        &name,
+        ProviderEntry {
+            kind: req.kind,
+            base_url: req.base_url,
+            api_key: req.api_key,
+            default_model: req.default_model,
+        },
+    );
+    f.save(&path).map_err(internal)?;
+    Ok(Json(UpsertProviderResponse {
+        path: path.to_string_lossy().to_string(),
+        wrote: true,
+    }))
+}
+
+pub async fn delete_provider(
+    Path(name): Path<String>,
+) -> Result<Json<UpsertProviderResponse>, (StatusCode, String)> {
+    let path = default_providers_path();
+    let mut f = ProvidersFile::load(&path);
+    if !f.remove(&name) {
+        return Err((StatusCode::NOT_FOUND, format!("no provider named {name:?}")));
+    }
+    f.save(&path).map_err(internal)?;
+    Ok(Json(UpsertProviderResponse {
+        path: path.to_string_lossy().to_string(),
+        wrote: true,
+    }))
 }
 
 // ---------------- control plane ----------------

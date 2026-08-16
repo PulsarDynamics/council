@@ -1,14 +1,14 @@
 <script lang="ts">
 	import {
 		BUILT_INS,
-		addCustom,
+		deleteProvider,
 		envVarsFor,
-		getCustoms,
+		fetchProviders,
 		kindLabel,
-		removeCustom,
-		updateCustom,
+		upsertProvider,
 		type ProviderConfig,
-		type ProviderKind
+		type ProviderKind,
+		type ProvidersView
 	} from '$lib/providers';
 
 	interface Props {
@@ -17,7 +17,9 @@
 	}
 	let { open, onClose }: Props = $props();
 
-	let customs: ProviderConfig[] = $state(getCustoms());
+	let view: ProvidersView | null = $state(null);
+	let loadError = $state('');
+	let saving = $state(false);
 
 	// New-provider form
 	let formName = $state('');
@@ -27,7 +29,28 @@
 	let formModel = $state('gpt-4o');
 	let formError = $state('');
 
-	function addNew(event: Event) {
+	$effect(() => {
+		if (open) {
+			refresh();
+		}
+	});
+
+	async function refresh() {
+		loadError = '';
+		try {
+			view = await fetchProviders();
+		} catch (e) {
+			loadError = e instanceof Error ? e.message : String(e);
+			view = null;
+		}
+	}
+
+	function customsList(): ProviderConfig[] {
+		if (!view) return [];
+		return Object.values(view.providers).sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	async function addNew(event: Event) {
 		event.preventDefault();
 		formError = '';
 		const name = formName.trim();
@@ -39,10 +62,6 @@
 			formError = 'Name must be letters, digits, _, or -';
 			return;
 		}
-		if (BUILT_INS.some((b) => b.name === name) || customs.some((c) => c.name === name)) {
-			formError = `"${name}" already exists`;
-			return;
-		}
 		const p: ProviderConfig = {
 			name,
 			kind: formKind,
@@ -50,26 +69,33 @@
 			apiKey: formApiKey.trim(),
 			defaultModel: formModel.trim() || 'gpt-4o'
 		};
-		addCustom(p);
-		customs = getCustoms();
-		formName = '';
-		formApiKey = '';
-		formError = '';
+		saving = true;
+		try {
+			await upsertProvider(p);
+			formName = '';
+			formApiKey = '';
+			await refresh();
+		} catch (e) {
+			formError = e instanceof Error ? e.message : String(e);
+		} finally {
+			saving = false;
+		}
 	}
 
-	function del(name: string) {
-		removeCustom(name);
-		customs = getCustoms();
-	}
-
-	function updateField(name: string, key: keyof ProviderConfig, value: string) {
-		updateCustom(name, { [key]: value } as Partial<ProviderConfig>);
-		customs = getCustoms();
+	async function del(name: string) {
+		saving = true;
+		try {
+			await deleteProvider(name);
+			await refresh();
+		} catch (e) {
+			loadError = e instanceof Error ? e.message : String(e);
+		} finally {
+			saving = false;
+		}
 	}
 </script>
 
 {#if open}
-	<!-- backdrop -->
 	<button
 		type="button"
 		aria-label="Close settings"
@@ -77,7 +103,6 @@
 		onclick={onClose}
 	></button>
 
-	<!-- panel -->
 	<aside
 		class="bg-base-100 border-base-300/60 fixed top-0 right-0 z-50 flex h-full w-full max-w-xl flex-col border-l shadow-2xl"
 	>
@@ -85,8 +110,11 @@
 			<div>
 				<h2 class="text-base font-semibold">Settings — LLM Providers</h2>
 				<p class="text-base-content/50 text-xs">
-					Built-ins always available. Customs persist in localStorage; agents
-					read them on next start.
+					{#if view}
+						persisted to <code class="bg-base-300/50 rounded px-1 font-mono text-[10px]">{view.path}</code>
+					{:else}
+						loading…
+					{/if}
 				</p>
 			</div>
 			<button
@@ -97,7 +125,10 @@
 		</header>
 
 		<div class="flex-1 space-y-6 overflow-y-auto px-5 py-4">
-			<!-- Built-ins -->
+			{#if loadError}
+				<p class="text-rose-400 text-xs">{loadError}</p>
+			{/if}
+
 			<section>
 				<h3 class="text-base-content/70 mb-2 text-xs font-semibold tracking-wide uppercase">
 					Built-in
@@ -116,7 +147,8 @@
 									{b.defaultBaseUrl} · {b.defaultModel}
 								</div>
 							</div>
-							<span class="bg-emerald-500/10 text-emerald-300 rounded px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
+							<span
+								class="bg-emerald-500/10 text-emerald-300 rounded px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
 								>ready</span
 							>
 						</li>
@@ -124,19 +156,18 @@
 				</ul>
 			</section>
 
-			<!-- Customs -->
 			<section>
 				<h3 class="text-base-content/70 mb-2 text-xs font-semibold tracking-wide uppercase">
-					Custom ({customs.length})
+					Custom ({customsList().length})
 				</h3>
-				{#if customs.length === 0}
+				{#if !view}
+					<p class="text-base-content/40 text-xs">Loading…</p>
+				{:else if customsList().length === 0}
 					<p class="text-base-content/40 text-xs">None yet. Add one below.</p>
 				{:else}
 					<ul class="space-y-2">
-						{#each customs as c (c.name)}
-							<li
-								class="border-base-300/40 bg-base-200/30 space-y-2 rounded-md border p-3"
-							>
+						{#each customsList() as c (c.name)}
+							<li class="border-base-300/40 bg-base-200/30 space-y-2 rounded-md border p-3">
 								<div class="flex items-start justify-between gap-2">
 									<div class="min-w-0 flex-1">
 										<div class="text-sm font-medium">{c.name}</div>
@@ -144,34 +175,19 @@
 									</div>
 									<button
 										type="button"
-										class="text-rose-400 hover:text-rose-300 text-xs underline"
+										disabled={saving}
+										class="text-rose-400 hover:text-rose-300 text-xs underline disabled:opacity-50"
 										onclick={() => del(c.name)}>remove</button
 									>
 								</div>
-								<div class="grid grid-cols-1 gap-1.5">
-									<input
-										class="border-base-300/60 bg-base-100/60 rounded border px-2 py-1 font-mono text-xs"
-										placeholder="https://api.example.com/v1"
-										value={c.baseUrl}
-										oninput={(e) => updateField(c.name, 'baseUrl', e.currentTarget.value)}
-									/>
-									<input
-										class="border-base-300/60 bg-base-100/60 rounded border px-2 py-1 font-mono text-xs"
-									type="password"
-										placeholder="api key"
-										value={c.apiKey}
-										oninput={(e) => updateField(c.name, 'apiKey', e.currentTarget.value)}
-									/>
-									<input
-										class="border-base-300/60 bg-base-100/60 rounded border px-2 py-1 font-mono text-xs"
-										placeholder="default model"
-										value={c.defaultModel}
-										oninput={(e) => updateField(c.name, 'defaultModel', e.currentTarget.value)}
-									/>
+								<div class="text-base-content/40 font-mono text-[10px]">
+									{c.baseUrl} · {c.defaultModel}
 								</div>
 								<details class="text-base-content/50 text-[10px]">
 									<summary class="cursor-pointer">env-var equivalent</summary>
-									<pre class="bg-base-300/30 mt-1 overflow-x-auto rounded p-2 text-[10px]">{envVarsFor(c).join('\n')}</pre>
+									<pre
+										class="bg-base-300/30 mt-1 overflow-x-auto rounded p-2 text-[10px]"
+									>{envVarsFor(c).join('\n')}</pre>
 								</details>
 							</li>
 						{/each}
@@ -179,7 +195,6 @@
 				{/if}
 			</section>
 
-			<!-- Add form -->
 			<section>
 				<h3 class="text-base-content/70 mb-2 text-xs font-semibold tracking-wide uppercase">
 					Add custom provider
@@ -207,7 +222,7 @@
 					<input
 						class="border-base-300/60 bg-base-100/60 w-full rounded border px-2 py-1.5 font-mono text-sm"
 						type="password"
-						placeholder="api key (kept in your browser only)"
+						placeholder="api key (kept in providers.toml)"
 						bind:value={formApiKey}
 					/>
 					<input
@@ -220,17 +235,17 @@
 					{/if}
 					<button
 						type="submit"
-						class="bg-primary text-primary-content hover:bg-primary/90 w-full rounded-md px-3 py-1.5 text-sm font-semibold"
+						disabled={saving}
+						class="bg-primary text-primary-content hover:bg-primary/90 w-full rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
 						>Add provider</button
 					>
 				</form>
 				<p class="text-base-content/40 mt-2 text-[11px] leading-relaxed">
-					The agent loads providers from env on each start. After saving a
-					custom provider here, restart the agent (or re-run
-					<code class="bg-base-300/50 rounded px-1">scripts/dev.sh</code>) and
-					set the matching env vars — or the agent's TOML <code class="bg-base-300/50 rounded px-1"
-						>model.provider</code
-					> can name this provider directly.
+					Provider configs are persisted to <code class="bg-base-300/50 rounded px-1 font-mono"
+						>providers.toml</code
+					> and read by every Council process. To swap an agent to a
+					custom mid-flight, open the agent card's "swap provider"
+					menu.
 				</p>
 			</section>
 		</div>

@@ -47,3 +47,9 @@ logs/
 .cache/
 .tmp/
 tmp/
+
+# Council runtime state (has API keys)
+providers.toml
+**/providers.toml
+!agents/providers.toml.example
+!.config/council/

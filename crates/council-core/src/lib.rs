@@ -9,6 +9,7 @@ pub mod bus;
 pub mod control;
 pub mod error;
 pub mod event;
+pub mod providers;
 pub mod session;
 pub mod tool;
 
@@ -17,5 +18,8 @@ pub use bus::{channels, EventEnvelope, EVENTS_CHANNEL};
 pub use control::{ControlEnvelope, ControlEvent, CONTROL_CHANNEL};
 pub use error::{CoreError, Result};
 pub use event::{AgentLifecycle, Event, EventId, EventKind, FileChangeKind};
+pub use providers::{
+    default_providers_path, ProviderConfig, ProviderEntry, ProviderKind, ProvidersFile,
+};
 pub use session::{Session, SessionId, SessionStatus};
 pub use tool::{Tool, ToolContext, ToolOutput};

@@ -1,6 +1,7 @@
 // Provider registry that mirrors the Rust ProviderRegistry. Built-ins
-// (OpenAI Chat, OpenAI Responses, Anthropic) are always present;
-// user-added customs are layered on top via localStorage.
+// (OpenAI Chat, OpenAI Responses, Anthropic) are always available;
+// user-added customs are read from the orchestrator's providers.toml
+// (via GET /api/providers) and upserted via POST /api/providers.
 
 import { browser } from '$app/environment';
 
@@ -46,58 +47,72 @@ export const BUILT_INS: BuiltIn[] = [
 	}
 ];
 
-const STORAGE_KEY = 'council.providers.v1';
+const ORCHESTRATOR_BASE: string =
+	(import.meta.env.VITE_COUNCIL_API as string | undefined) ?? '';
 
-function loadCustoms(): ProviderConfig[] {
-	if (!browser) return [];
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (!raw) return [];
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed)) return [];
-		return parsed.filter(
-			(p): p is ProviderConfig =>
-				typeof p?.name === 'string' &&
-				typeof p?.kind === 'string' &&
-				typeof p?.baseUrl === 'string' &&
-				typeof p?.apiKey === 'string' &&
-				typeof p?.defaultModel === 'string'
-		);
-	} catch {
-		return [];
+export interface ProvidersView {
+	path: string;
+	providers: Record<string, ProviderConfig>;
+}
+
+/** Fetch the providers file from the orchestrator. */
+export async function fetchProviders(): Promise<ProvidersView> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/providers`);
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`fetch providers failed: ${res.status} ${text}`);
 	}
+	// The API returns snake_case-ish keys (`base_url`, `api_key`,
+	// `default_model`); normalise to camelCase for the UI.
+	const raw = (await res.json()) as {
+		path: string;
+		providers: Record<
+			string,
+			{ kind: ProviderKind; base_url: string; api_key: string; default_model: string }
+		>;
+	};
+	const out: Record<string, ProviderConfig> = {};
+	for (const [name, e] of Object.entries(raw.providers ?? {})) {
+		out[name] = {
+			name,
+			kind: e.kind,
+			baseUrl: e.base_url,
+			apiKey: e.api_key,
+			defaultModel: e.default_model
+		};
+	}
+	return { path: raw.path, providers: out };
 }
 
-function saveCustoms(customs: ProviderConfig[]): void {
-	if (!browser) return;
-	localStorage.setItem(STORAGE_KEY, JSON.stringify(customs));
-}
-
-/** Reactive store of custom providers. Call from components. */
-export function getCustoms(): ProviderConfig[] {
-	return loadCustoms();
-}
-
-export function addCustom(p: Omit<ProviderConfig, 'kind'> & { kind?: ProviderKind }): void {
-	const customs = loadCustoms();
-	customs.push({
-		name: p.name,
-		kind: p.kind ?? 'openai_chat',
-		baseUrl: p.baseUrl,
-		apiKey: p.apiKey,
-		defaultModel: p.defaultModel
+/** Upsert a provider. Writes to providers.toml via the orchestrator. */
+export async function upsertProvider(p: ProviderConfig): Promise<{ path: string }> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/providers`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			name: p.name,
+			kind: p.kind,
+			base_url: p.baseUrl,
+			api_key: p.apiKey,
+			default_model: p.defaultModel
+		})
 	});
-	saveCustoms(customs);
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`upsert failed: ${res.status} ${text}`);
+	}
+	return res.json();
 }
 
-export function removeCustom(name: string): void {
-	const customs = loadCustoms().filter((c) => c.name !== name);
-	saveCustoms(customs);
-}
-
-export function updateCustom(name: string, patch: Partial<ProviderConfig>): void {
-	const customs = loadCustoms().map((c) => (c.name === name ? { ...c, ...patch } : c));
-	saveCustoms(customs);
+/** Remove a provider. */
+export async function deleteProvider(name: string): Promise<void> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/providers/${encodeURIComponent(name)}`, {
+		method: 'DELETE'
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`delete failed: ${res.status} ${text}`);
+	}
 }
 
 export function kindLabel(kind: ProviderKind): string {

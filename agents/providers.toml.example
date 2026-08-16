@@ -1,0 +1,35 @@
+# Council — providers.toml example
+# --------------------------
+# This file is the source of truth for custom LLM providers. The
+# orchestrator and every agent process read it on startup, and the UI's
+# settings panel writes to it via POST /api/providers.
+#
+# Default path: $COUNCIL_PROVIDERS_FILE or ~/.config/council/providers.toml.
+# To use this file: copy it to the default path (or set $COUNCIL_PROVIDERS_FILE)
+# and edit. Never commit the real file — it has your API keys.
+
+[providers.groq]
+kind = "openai_chat"
+base_url = "https://api.groq.com/openai/v1"
+api_key = "gsk_replace_me"
+default_model = "llama-3.3-70b-versatile"
+
+[providers.local-llama]
+kind = "openai_chat"
+base_url = "http://localhost:11434/v1"
+api_key = ""
+default_model = "llama3.2"
+
+[providers.together]
+kind = "openai_chat"
+base_url = "https://api.together.xyz/v1"
+api_key = ""
+default_model = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+
+# OpenAI Responses API entry. Same base URL as the OpenAI Chat entry
+# but uses the new /v1/responses endpoint with first-class tool use.
+[providers.openai-responses-local]
+kind = "openai_responses"
+base_url = "https://api.openai.com/v1"
+api_key = "sk_replace_me"
+default_model = "gpt-4o"

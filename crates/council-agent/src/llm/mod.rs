@@ -19,34 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-/// Identifies the wire format the provider speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    /// OpenAI /v1/chat/completions. Also works with any OpenAI-compatible
-    /// endpoint that follows the chat/completions shape (Together, Groq,
-    /// OpenRouter's compat mode, local llama.cpp, etc.).
-    OpenAiChat,
-    /// OpenAI /v1/responses. Newer API with first-class tool/agent support.
-    OpenAiResponses,
-    /// Anthropic /v1/messages. Distinctive tool-use + content-block shape.
-    AnthropicMessages,
-    /// Any other OpenAI-compatible /v1/chat/completions endpoint. Same
-    /// wire format as `OpenAiChat` but conceptually a "custom" entry the
-    /// user added in the settings menu.
-    Custom,
-}
-
-impl ProviderKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::OpenAiChat => "OpenAI Chat Completions",
-            Self::OpenAiResponses => "OpenAI Responses",
-            Self::AnthropicMessages => "Anthropic Messages",
-            Self::Custom => "Custom",
-        }
-    }
-}
+// Re-export the shared types from council-core so the LLM module
+// doesn't have to import council-core::ProviderKind in every file.
+pub use council_core::{ProviderConfig, ProviderKind};
 
 /// Normalized chat message. The LLM loops in `loop.rs` build a list of these
 /// from the event stream and hand them to the provider; the provider
@@ -129,14 +104,7 @@ pub struct CompletionResponse {
 /// Configuration for one LLM provider. Loaded from env (built-ins) or from
 /// the user's settings (custom). The agent holds one `ProviderConfig` per
 /// provider it knows about, indexed by name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    pub name: String,
-    pub kind: ProviderKind,
-    pub base_url: String,
-    pub api_key: String,
-    pub default_model: String,
-}
+// (moved to council-core as `ProviderConfig`; re-exported above.)
 
 #[derive(Debug, Error)]
 pub enum LlmError {

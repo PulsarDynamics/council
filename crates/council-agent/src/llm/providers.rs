@@ -36,10 +36,16 @@ pub struct OpenAiChatProvider {
 
 impl OpenAiChatProvider {
     pub fn new() -> Self {
+        Self::with_base_url("https://api.openai.com/v1")
+    }
+
+    /// Construct with a custom base URL (used for OpenAI-compatible
+    /// providers like Together, Groq, OpenRouter, local llama.cpp).
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             name: "openai".into(),
             default_model: "gpt-4o".into(),
-            default_base_url: "https://api.openai.com/v1".into(),
+            default_base_url: base_url.into(),
             http: Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(120))
@@ -236,10 +242,15 @@ pub struct OpenAiResponsesProvider {
 
 impl OpenAiResponsesProvider {
     pub fn new() -> Self {
+        Self::with_base_url("https://api.openai.com/v1")
+    }
+
+    /// Construct with a custom base URL.
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             name: "openai-responses".into(),
             default_model: "gpt-4o".into(),
-            default_base_url: "https://api.openai.com/v1".into(),
+            default_base_url: base_url.into(),
             http: Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(120))
@@ -421,10 +432,15 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new() -> Self {
+        Self::with_base_url("https://api.anthropic.com/v1")
+    }
+
+    /// Construct with a custom base URL (Anthropic-compatible providers).
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             name: "anthropic".into(),
             default_model: "claude-sonnet-4-5".into(),
-            default_base_url: "https://api.anthropic.com/v1".into(),
+            default_base_url: base_url.into(),
             http: Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(120))
