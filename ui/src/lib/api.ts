@@ -52,6 +52,35 @@ export async function swapProvider(req: SwapProviderRequest): Promise<SwapProvid
 	return res.json();
 }
 
+// ---------------- session history ----------------
+
+export interface SessionMeta {
+	id: string;
+	goal: string;
+	created_at: string;
+	completed_at?: string;
+	status: string;
+	event_count: number;
+}
+
+export async function listSessions(): Promise<SessionMeta[]> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/sessions`);
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`list sessions failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
+export async function getSessionEvents(id: string): Promise<EventEnvelope[]> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/sessions/${encodeURIComponent(id)}/events`);
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`get session events failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
 export async function resetAgent(agent: string): Promise<{ dispatched: boolean }> {
 	const res = await fetch(`${ORCHESTRATOR_BASE}/api/control/reset`, {
 		method: 'POST',

@@ -49,6 +49,13 @@ impl Bus {
         Ok(())
     }
 
+    /// Clone of the underlying multiplexed connection. Used by the
+    /// session-history endpoints and persistence task that need to run
+    /// arbitrary commands outside the publish/subscribe path.
+    pub async fn connection_clone(&self) -> redis::aio::ConnectionManager {
+        self.conn.clone()
+    }
+
     /// Subscribe to `EVENTS_CHANNEL` and yield each envelope as it arrives.
     /// The returned stream lives for the duration of the caller's task; if
     /// the Redis connection drops it will end (the caller should reconnect).

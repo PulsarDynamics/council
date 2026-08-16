@@ -109,6 +109,147 @@ fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
+// ---------------- session history ----------------
+
+/// Lightweight per-session index. The full event log lives at
+/// `council:session:<id>:events` (Redis list, TTL'd). The index at
+/// `council:session:<id>:meta` is a Redis hash with the fields below.
+const SESSION_EVENTS_TTL_SECS: u64 = 24 * 60 * 60;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub id: Uuid,
+    pub goal: String,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    pub status: String,
+    pub event_count: u64,
+}
+
+/// Persist a session envelope: pushes onto the events list and
+/// upserts the meta hash. Idempotent.
+pub async fn persist_event(
+    state: &AppState,
+    envelope: &EventEnvelope,
+) -> Result<(), String> {
+    use redis::AsyncCommands;
+    let mut conn = state.bus.connection_clone().await;
+    let bytes = envelope.encode().map_err(|e| format!("encode: {e}"))?;
+    let key_events = format!("council:session:{}:events", envelope.event.session_id);
+    let key_meta = format!("council:session:{}:meta", envelope.event.session_id);
+    let _: () = conn
+        .rpush(&key_events, bytes)
+        .await
+        .map_err(|e| format!("rpush: {e}"))?;
+    let _: () = conn
+        .expire(&key_events, SESSION_EVENTS_TTL_SECS as i64)
+        .await
+        .map_err(|e| format!("expire: {e}"))?;
+    // On SessionCreated, write the goal + status into the meta hash.
+    if let council_core::EventKind::SessionCreated { goal } = &envelope.event.kind {
+        let _: () = conn
+            .hset_multiple(
+                &key_meta,
+                &[
+                    ("id", envelope.event.session_id.to_string()),
+                    ("goal", goal.clone()),
+                    ("created_at", envelope.event.timestamp.to_rfc3339()),
+                    ("status", "running".to_string()),
+                ],
+            )
+            .await
+            .map_err(|e| format!("hset: {e}"))?;
+        let _: () = conn
+            .expire(&key_meta, SESSION_EVENTS_TTL_SECS as i64)
+            .await
+            .map_err(|e| format!("expire meta: {e}"))?;
+    } else if let council_core::EventKind::SessionCompleted { .. } = &envelope.event.kind {
+        let _: () = conn
+            .hset(&key_meta, "status", "completed")
+            .await
+            .map_err(|e| format!("hset status: {e}"))?;
+        let _: () = conn
+            .hset(
+                &key_meta,
+                "completed_at",
+                envelope.event.timestamp.to_rfc3339(),
+            )
+            .await
+            .map_err(|e| format!("hset completed_at: {e}"))?;
+    } else {
+        // Generic event: bump the count. Cheap.
+        let _: i64 = conn
+            .hincr(&key_meta, "event_count", 1)
+            .await
+            .map_err(|e| format!("hincr: {e}"))?;
+    }
+    // Add to a global recent-sessions sorted set (by created_at ms).
+    let _: () = conn
+        .zadd(
+            "council:sessions:recent",
+            envelope.event.session_id.to_string(),
+            envelope.event.timestamp.timestamp() as f64,
+        )
+        .await
+        .map_err(|e| format!("zadd: {e}"))?;
+    Ok(())
+}
+
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<SessionMeta>>, (StatusCode, String)> {
+    use redis::AsyncCommands;
+    let mut conn = state.bus.connection_clone().await;
+    // ZREVRANGE the recent-sessions set; for each, HGETALL the meta.
+    let ids: Vec<String> = conn
+        .zrevrange("council:sessions:recent", 0, 49)
+        .await
+        .map_err(internal)?;
+    let mut out: Vec<SessionMeta> = Vec::with_capacity(ids.len());
+    for id_s in ids {
+        let Ok(id) = Uuid::parse_str(&id_s) else { continue };
+        let key_meta = format!("council:session:{id}:meta");
+        let map: std::collections::HashMap<String, String> =
+            conn.hgetall(&key_meta).await.map_err(internal)?;
+        if map.is_empty() {
+            continue;
+        }
+        let event_count: u64 = conn
+            .llen(format!("council:session:{id}:events"))
+            .await
+            .unwrap_or(0);
+        out.push(SessionMeta {
+            id,
+            goal: map.get("goal").cloned().unwrap_or_default(),
+            created_at: map.get("created_at").cloned().unwrap_or_default(),
+            completed_at: map.get("completed_at").cloned(),
+            status: map.get("status").cloned().unwrap_or_else(|| "unknown".into()),
+            event_count,
+        });
+    }
+    Ok(Json(out))
+}
+
+pub async fn get_session_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<EventEnvelope>>, (StatusCode, String)> {
+    use redis::AsyncCommands;
+    let mut conn = state.bus.connection_clone().await;
+    let key = format!("council:session:{id}:events");
+    let raw: Vec<Vec<u8>> = conn.lrange(&key, 0, -1).await.map_err(internal)?;
+    let mut out: Vec<EventEnvelope> = Vec::with_capacity(raw.len());
+    for bytes in raw {
+        match EventEnvelope::decode(&bytes) {
+            Ok(env) => out.push(env),
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping malformed event in history");
+            }
+        }
+    }
+    Ok(Json(out))
+}
+
 // ---------------- providers file ----------------
 
 /// Return the on-disk path of the providers file plus its current contents.

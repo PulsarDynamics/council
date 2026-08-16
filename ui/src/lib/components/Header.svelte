@@ -6,8 +6,9 @@
 		stream: StreamSource | 'connecting';
 		sessionId: string | null;
 		onOpenSettings?: () => void;
+		onOpenHistory?: () => void;
 	}
-	let { stream, sessionId, onOpenSettings }: Props = $props();
+	let { stream, sessionId, onOpenSettings, onOpenHistory }: Props = $props();
 </script>
 
 <header
@@ -41,6 +42,16 @@
 			<StatusPill status="mock" label="mock stream" />
 		{:else}
 			<StatusPill status="disconnected" label="connecting…" />
+		{/if}
+		{#if onOpenHistory}
+			<button
+				type="button"
+				class="hover:bg-base-300/60 text-base-content/70 hover:text-base-content ml-1 rounded-md border border-base-300/60 px-2 py-0.5 text-xs"
+				onclick={onOpenHistory}
+				aria-label="Open history"
+			>
+				history
+			</button>
 		{/if}
 		{#if onOpenSettings}
 			<button

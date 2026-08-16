@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
@@ -53,13 +54,15 @@ pub async fn serve(bind: SocketAddr) -> Result<()> {
     // Build the shared state and start forwarding Redis events to it.
     let state = AppState::new(bus.clone());
     spawn_event_forwarder(bus.clone(), state.events_tx.clone());
+    spawn_event_persister(bus.clone(), state.clone());
 
     // HTTP + WS router.
     let app = Router::new()
         .route("/health", get(api::health))
         .route("/version", get(api::version))
         .route("/api/agents", get(api::list_agents))
-        .route("/api/sessions", post(api::submit_goal))
+        .route("/api/sessions", get(api::list_sessions).post(api::submit_goal))
+        .route("/api/sessions/:id/events", get(api::get_session_events))
         .route("/api/control/swap", post(api::swap_provider))
         .route("/api/control/reset", post(api::reset_session))
         .route("/api/providers", get(api::get_providers).post(api::upsert_provider))
@@ -100,6 +103,27 @@ fn spawn_event_forwarder(bus: Bus, tx: tokio::sync::broadcast::Sender<EventEnvel
             let _ = tx.send(env);
         }
         warn!("bus subscription stream ended");
+    });
+}
+
+/// Same subscription, but write each event to Redis so the history
+/// endpoints can serve past sessions. TTL'd to 24h; older sessions
+/// fall off the sidebar automatically.
+fn spawn_event_persister(bus: Bus, state: Arc<state::AppState>) {
+    tokio::spawn(async move {
+        let mut stream = match bus.subscribe().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "event persister: failed to subscribe");
+                return;
+            }
+        };
+        while let Some(env) = stream.next().await {
+            if let Err(e) = api::persist_event(&state, &env).await {
+                warn!(error = %e, "event persister: persist_event failed");
+            }
+        }
+        warn!("event persister: bus stream ended");
     });
 }
 

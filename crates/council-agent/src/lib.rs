@@ -23,6 +23,7 @@ mod control;
 mod llm;
 mod session;
 mod tools;
+mod tools_web;
 
 use bus::AgentBus;
 use control::{handle_control, lookup_provider_with, spawn_providers_watcher, ProvidersState};

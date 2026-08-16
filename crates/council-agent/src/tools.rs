@@ -449,6 +449,13 @@ fn shell_escape(s: &str) -> String {
 /// Built-in toolset. The agent passes its TOML `[tools].allowed` list
 /// through this filter to produce the per-agent registry.
 pub fn builtin_tools(publisher: Arc<dyn Publisher>) -> Vec<Arc<dyn Tool>> {
+    use crate::tools_web::{
+        open_memory, MemoryDeleteTool, MemoryGetTool, MemoryListTool, MemorySearchTool,
+        MemorySetTool, WebSearchTool,
+    };
+
+    let memory = open_memory().expect("open memory store");
+
     let mut v: Vec<Arc<dyn Tool>> = Vec::new();
     v.push(Arc::new(ReadFileTool));
     v.push(Arc::new(WriteFileTool));
@@ -460,6 +467,13 @@ pub fn builtin_tools(publisher: Arc<dyn Publisher>) -> Vec<Arc<dyn Tool>> {
         target_channel: "goal".into(),
     }));
     v.push(Arc::new(AskUserTool { publisher }));
+    v.push(Arc::new(SearchCodeTool));
+    v.push(Arc::new(WebSearchTool::new()));
+    v.push(Arc::new(MemorySetTool(memory.clone())));
+    v.push(Arc::new(MemoryGetTool(memory.clone())));
+    v.push(Arc::new(MemoryDeleteTool(memory.clone())));
+    v.push(Arc::new(MemoryListTool(memory.clone())));
+    v.push(Arc::new(MemorySearchTool(memory)));
     v
 }
 

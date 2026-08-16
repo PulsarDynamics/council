@@ -6,6 +6,7 @@
 	import EventStream from '$lib/components/EventStream.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 	import SwapProviderModal from '$lib/components/SwapProviderModal.svelte';
+	import HistorySidebar from '$lib/components/HistorySidebar.svelte';
 	import { agents as starterAgents } from '$lib/agents';
 	import { submitGoal, subscribeToEvents, type StreamSource } from '$lib/api';
 	import type { AgentLifecycle, EventEnvelope } from '$lib/types';
@@ -69,12 +70,14 @@
 
 	let settingsOpen = $state(false);
 	let swapTarget: string | null = $state(null);
+	let historyOpen = $state(false);
 </script>
 
 <Header
 	stream={streamSource}
 	sessionId={activeSessionId}
 	onOpenSettings={() => (settingsOpen = true)}
+	onOpenHistory={() => (historyOpen = true)}
 />
 
 <SettingsPanel open={settingsOpen} onClose={() => (settingsOpen = false)} />
@@ -83,6 +86,12 @@
 	open={swapTarget !== null}
 	agent={swapTarget}
 	onClose={() => (swapTarget = null)}
+/>
+
+<HistorySidebar
+	open={historyOpen}
+	onClose={() => (historyOpen = false)}
+	onPickSession={(id) => (activeSessionId = id)}
 />
 
 <main class="mx-auto flex h-[calc(100vh-3.5rem)] max-w-7xl gap-4 px-4 py-4">
