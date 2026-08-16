@@ -65,6 +65,7 @@ pub async fn serve(bind: SocketAddr) -> Result<()> {
         .route("/api/sessions/:id/events", get(api::get_session_events))
         .route("/api/control/swap", post(api::swap_provider))
         .route("/api/control/reset", post(api::reset_session))
+        .route("/api/control/cancel", post(api::cancel_session))
         .route("/api/providers", get(api::get_providers).post(api::upsert_provider))
         .route("/api/providers/:name", axum::routing::delete(api::delete_provider))
         .route("/ws", get(ws::ws_handler))

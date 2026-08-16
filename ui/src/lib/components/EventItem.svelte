@@ -106,6 +106,13 @@
 					tag: 'bg-emerald-500/15',
 					tagText: 'text-emerald-200'
 				};
+			case 'session_cancelled':
+				return {
+					border: 'border-l-amber-500',
+					bg: 'bg-amber-950/30',
+					tag: 'bg-amber-500/15',
+					tagText: 'text-amber-200'
+				};
 			case 'error':
 				return {
 					border: 'border-l-rose-500',
@@ -135,6 +142,8 @@
 				return `Goal: ${k.goal}`;
 			case 'session_completed':
 				return k.summary;
+			case 'session_cancelled':
+				return k.reason;
 			case 'error':
 				return `${k.source}: ${k.message}`;
 			case 'llm_call':

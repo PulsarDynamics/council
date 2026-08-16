@@ -337,6 +337,42 @@ pub async fn handle_control(
             info!(count = flat.len(), "providers reloaded by control event");
             Ok(None)
         }
+        ControlEvent::CancelSession { session_id, reason } => {
+            // Signal the in-flight LLM loop (if any) for this session.
+            // We also publish a "system" event for visibility, so an
+            // observer can see why the loop stopped even if they
+            // weren't watching for SessionCancelled. If no loop is
+            // running for this session, the next caller of
+            // `cancel_token()` will get a fresh Notify and the call
+            // here is a no-op for that future session.
+            let token = sessions.cancel_token(*session_id).await;
+            token.notify_one();
+            let reason = reason.as_deref().unwrap_or("user cancelled").to_string();
+            info!(
+                agent = agent_name,
+                session = %session_id,
+                reason = %reason,
+                "cancel signal dispatched"
+            );
+            // Publish a system note so the session's event stream
+            // shows the trigger. The loop's own SessionCancelled
+            // (published in `publish_cancelled`) is the canonical
+            // signal; this is just a breadcrumb.
+            let _ = publisher
+                .publish(&EventEnvelope::new(
+                    "broadcast",
+                    Event::new(
+                        *session_id,
+                        EventKind::System {
+                            message: format!(
+                                "[{agent_name}] cancel requested: {reason}"
+                            ),
+                        },
+                    ),
+                ))
+                .await;
+            Ok(None)
+        }
     }
 }
 

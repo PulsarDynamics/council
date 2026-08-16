@@ -79,6 +79,10 @@ pub enum EventKind {
     SessionCreated { goal: String },
     /// A session completed (with a human-readable summary).
     SessionCompleted { summary: String },
+    /// A session was cancelled — by the user, or by the system
+    /// (e.g. max iterations hit). The reason is for display; the
+    /// canonical state is that the session is no longer running.
+    SessionCancelled { reason: String },
     /// An error occurred somewhere in the system.
     Error { source: String, message: String },
 }

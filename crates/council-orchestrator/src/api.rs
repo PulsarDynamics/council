@@ -187,6 +187,19 @@ pub async fn persist_event(
             )
             .await
             .map_err(|e| format!("hset completed_at: {e}"))?;
+    } else if let council_core::EventKind::SessionCancelled { .. } = &envelope.event.kind {
+        let _: () = conn
+            .hset(&key_meta, "status", "cancelled")
+            .await
+            .map_err(|e| format!("hset status: {e}"))?;
+        let _: () = conn
+            .hset(
+                &key_meta,
+                "completed_at",
+                envelope.event.timestamp.to_rfc3339(),
+            )
+            .await
+            .map_err(|e| format!("hset completed_at: {e}"))?;
     } else {
         // Generic event: bump the count. Cheap.
         let _: i64 = conn
@@ -448,4 +461,47 @@ pub async fn reset_session(
         .await
         .map_err(internal)?;
     Ok(Json(ResetSessionResponse { dispatched: true }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CancelSessionRequest {
+    pub session_id: Uuid,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CancelSessionResponse {
+    pub dispatched: bool,
+    pub message: String,
+}
+
+/// POST /api/control/cancel — signal a running session to stop. The
+/// `CancelSession` control event is published on `council:control`;
+/// every subscribed agent receives it, and the one (or ones) currently
+/// driving that session's LLM loop will drop the in-flight stream and
+/// publish a `SessionCancelled` event back on the events channel.
+pub async fn cancel_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CancelSessionRequest>,
+) -> Result<Json<CancelSessionResponse>, (StatusCode, String)> {
+    let env = ControlEnvelope {
+        event: ControlEvent::CancelSession {
+            session_id: req.session_id,
+            reason: req.reason.clone(),
+        },
+    };
+    state
+        .bus
+        .publish_control(&env)
+        .await
+        .map_err(internal)?;
+    Ok(Json(CancelSessionResponse {
+        dispatched: true,
+        message: format!(
+            "cancel dispatched for session {} ({})",
+            req.session_id,
+            req.reason.as_deref().unwrap_or("user cancelled")
+        ),
+    }))
 }

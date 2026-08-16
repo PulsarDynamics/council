@@ -247,6 +247,8 @@ fn spawn_event_handler(
     let runner = loop_runner.clone();
     let bus = publisher.clone();
     let spec_name = spec.name.clone();
+    let session_id = env.event.session_id;
+    let sessions_for_cancel = sessions.clone();
     tokio::spawn(async move {
         let _ = bus
             .publish(&EventEnvelope::new(
@@ -261,7 +263,15 @@ fn spawn_event_handler(
             ))
             .await;
 
-        if let Err(e) = runner.run_once(&env.event, bus.as_ref()).await {
+        // Get (or lazily create) the per-session cancel token. Both the
+        // loop and the cancel control handler go through the same
+        // SessionMap method so they share the same Notify.
+        let cancel = sessions_for_cancel.cancel_token(session_id).await;
+
+        if let Err(e) = runner
+            .run_once(&env.event, bus.as_ref(), &cancel)
+            .await
+        {
             warn!(agent = %spec_name, error = %e, "llm loop failed");
         }
 

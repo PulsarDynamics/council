@@ -37,6 +37,12 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Acquire the env lock and recover from poisoning (a panic in one
+/// test while holding the lock shouldn't break siblings).
+fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    env_lock().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// In-memory bus that records every published envelope so the test can
 /// assert on the event sequence.
 struct RecordingBus {
@@ -63,6 +69,7 @@ fn event_type_name(k: &EventKind) -> &'static str {
         EventKind::System { .. } => "system",
         EventKind::SessionCreated { .. } => "session_created",
         EventKind::SessionCompleted { .. } => "session_completed",
+        EventKind::SessionCancelled { .. } => "session_cancelled",
         EventKind::Error { .. } => "error",
     }
 }
@@ -173,7 +180,7 @@ async fn agent_loop_emits_deltas_then_final_message_via_stream() {
             content: "say hello".into(),
         },
     );
-    loop_.run_once(&trigger, &bus).await.expect("loop ok");
+    loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new()).await.expect("loop ok");
 
     // 6. Inspect what the loop published.
     let events = bus.events.lock().unwrap().clone();
@@ -246,7 +253,7 @@ async fn agent_loop_does_not_emit_message_event_when_response_is_tool_only() {
     // no deltas — just an LlmCall and the tool-call events. With an
     // empty tools list the loop will just record the assistant turn
     // (no tool execution) and EndTurn.
-    let _env = env_lock().lock().unwrap();
+    let _env = acquire_env_lock();
     std::env::set_var("OPENAI_API_KEY", "sk-test");
     use super::ToolCall;
     let server = MockServer::start().await;
@@ -300,7 +307,7 @@ async fn agent_loop_does_not_emit_message_event_when_response_is_tool_only() {
     // We expect this to return Ok even with empty tools — the agent
     // records the turn and ends. (In a real run with tools available,
     // it would call the tool and then either continue or EndTurn.)
-    let result = loop_.run_once(&trigger, &bus).await;
+    let result = loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new()).await;
     if let Err(ref e) = result {
         // Print the captured error events for debugging the failure
         // path — the second iteration's mock SSE body might not
@@ -337,4 +344,140 @@ async fn agent_loop_does_not_emit_message_event_when_response_is_tool_only() {
     assert_eq!(delta_count, 0, "no text → no deltas");
     assert_eq!(msg_count, 0, "no text → no AgentMessage");
     assert!(llm_count >= 1, "expected at least one LlmCall (got {llm_count})");
+}
+
+#[tokio::test]
+async fn agent_loop_aborts_mid_stream_when_cancel_is_signalled() {
+    // The wiremock response is delayed via `set_delay`, so the agent
+    // spends time waiting on the response body. We cancel during
+    // that wait and verify the loop exits with a SessionCancelled
+    // event (and no final AgentMessage).
+    let _env = acquire_env_lock();
+    std::env::set_var("OPENAI_API_KEY", "sk-test");
+
+    let server = MockServer::start().await;
+    let body = sample_two_delta_stream();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(Arc::new(OpenAiChatProvider::with_base_url(server.uri())));
+    let spec = planner_spec();
+    let loop_ = AgentLoop::from_spec(spec, registry, vec![]).unwrap();
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<EventEnvelope>::new()));
+    struct SharedBus {
+        events: std::sync::Arc<std::sync::Mutex<Vec<EventEnvelope>>>,
+    }
+    #[async_trait]
+    impl crate::tools::Publisher for SharedBus {
+        async fn publish(&self, env: &EventEnvelope) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(env.clone());
+            Ok(())
+        }
+    }
+    let bus = SharedBus { events: events.clone() };
+    let trigger = Event::new(
+        uuid::Uuid::new_v4(),
+        EventKind::UserMessage { content: "long task".into() },
+    );
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    let cancel_clone = cancel.clone();
+    let handle = tokio::spawn(async move {
+        loop_.run_once(&trigger, &bus, &cancel_clone).await
+    });
+    // Give the agent time to enter `stream.next().await`, then cancel.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    cancel.notify_one();
+    let result = handle.await.expect("task didn't panic");
+    assert!(result.is_ok(), "cancel should not be an error: {result:?}");
+
+    let events = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let cancel_event = events
+        .iter()
+        .find(|e| matches!(e.event.kind, EventKind::SessionCancelled { .. }));
+    let final_msg = events
+        .iter()
+        .find(|e| matches!(e.event.kind, EventKind::AgentMessage { .. }));
+    assert!(
+        cancel_event.is_some(),
+        "expected SessionCancelled; events: {:?}",
+        events
+            .iter()
+            .map(|e| event_type_name(&e.event.kind))
+            .collect::<Vec<_>>()
+    );
+    assert!(final_msg.is_none(), "no final AgentMessage on cancel");
+}
+
+#[tokio::test]
+async fn agent_loop_aborts_between_iterations_when_cancel_precedes_run() {
+    // Cancel is signalled BEFORE the loop starts; the iteration
+    // boundary check should catch it and the loop should exit before
+    // any LLM call.
+    let _env = acquire_env_lock();
+    std::env::set_var("OPENAI_API_KEY", "sk-test");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sample_two_delta_stream()),
+        )
+        .mount(&server)
+        .await;
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(Arc::new(OpenAiChatProvider::with_base_url(server.uri())));
+    let spec = planner_spec();
+    let loop_ = AgentLoop::from_spec(spec, registry, vec![]).unwrap();
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<EventEnvelope>::new()));
+    struct SharedBus {
+        events: std::sync::Arc<std::sync::Mutex<Vec<EventEnvelope>>>,
+    }
+    #[async_trait]
+    impl crate::tools::Publisher for SharedBus {
+        async fn publish(&self, env: &EventEnvelope) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(env.clone());
+            Ok(())
+        }
+    }
+    let bus = SharedBus { events: events.clone() };
+    let trigger = Event::new(
+        uuid::Uuid::new_v4(),
+        EventKind::UserMessage { content: "shouldn't even start".into() },
+    );
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    // Pre-cancel before the loop runs.
+    cancel.notify_one();
+
+    let result = loop_.run_once(&trigger, &bus, &cancel).await;
+    assert!(result.is_ok());
+
+    let events = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let llm_count = events
+        .iter()
+        .filter(|e| matches!(e.event.kind, EventKind::LlmCall { .. }))
+        .count();
+    let cancel_event = events
+        .iter()
+        .find(|e| matches!(e.event.kind, EventKind::SessionCancelled { .. }));
+    assert_eq!(llm_count, 0, "pre-cancelled loop should never call the LLM");
+    assert!(cancel_event.is_some(), "expected SessionCancelled");
 }

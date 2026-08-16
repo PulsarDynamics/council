@@ -10,9 +10,10 @@
 //! fine — a restart means a fresh session anyway.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use council_core::{EventEnvelope, EventKind, SessionId};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::llm::ChatMessage;
 
@@ -28,6 +29,12 @@ pub struct SessionState {
     /// Pending history to seed the next `run_once` call. Set by the swap
     /// routine; consumed by the LLM loop on its next call.
     pub pending_history: Option<Vec<ChatMessage>>,
+    /// Cancellation signal. The cancel control handler calls
+    /// `notify_one()` on this; the agent loop's `run_once` selects on
+    /// it to abort the in-flight LLM stream between (and during)
+    /// iterations. Created lazily on first request so idle sessions
+    /// don't pay the cost.
+    pub cancel: Option<Arc<Notify>>,
 }
 
 impl SessionState {
@@ -84,6 +91,7 @@ impl SessionState {
                 EventKind::System { message } => format!("system: {message}"),
                 EventKind::SessionCreated { goal } => format!("session_created: {goal}"),
                 EventKind::SessionCompleted { summary } => format!("session_completed: {summary}"),
+                EventKind::SessionCancelled { reason } => format!("session_cancelled: {reason}"),
                 EventKind::Error { source, message } => format!("error({source}): {message}"),
             };
             out.push_str("- ");
@@ -98,6 +106,9 @@ impl SessionState {
         self.events.clear();
         self.files_touched.clear();
         self.pending_history = None;
+        // Drop the cancel token; the next call to `cancel_token()` for
+        // this session will mint a fresh one.
+        self.cancel = None;
     }
 }
 
@@ -144,5 +155,20 @@ impl SessionMap {
     pub async fn first_session_id(&self) -> Option<SessionId> {
         let guard = self.inner.lock().await;
         guard.keys().next().copied()
+    }
+
+    /// Get (or lazily create) the cancellation token for a session.
+    /// Both the agent loop and the cancel control handler go through
+    /// this so they always see the same `Notify`. The token is
+    /// one-shot per creation: once `notify_one()` is called, the next
+    /// `notified().await` returns; subsequent calls block again.
+    /// ResetSession drops the entry so the next call mints a fresh one.
+    pub async fn cancel_token(&self, session_id: SessionId) -> Arc<Notify> {
+        let mut guard = self.inner.lock().await;
+        let state = guard.entry(session_id).or_insert_with(SessionState::new);
+        if state.cancel.is_none() {
+            state.cancel = Some(Arc::new(Notify::new()));
+        }
+        Arc::clone(state.cancel.as_ref().expect("just initialized"))
     }
 }

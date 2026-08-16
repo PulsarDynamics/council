@@ -35,6 +35,7 @@ export type EventKind =
 	| { type: 'system'; message: string }
 	| { type: 'session_created'; goal: string }
 	| { type: 'session_completed'; summary: string }
+	| { type: 'session_cancelled'; reason: string }
 	| { type: 'error'; source: string; message: string };
 
 export interface Event {

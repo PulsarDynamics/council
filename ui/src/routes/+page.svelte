@@ -8,7 +8,7 @@
 	import SwapProviderModal from '$lib/components/SwapProviderModal.svelte';
 	import HistorySidebar from '$lib/components/HistorySidebar.svelte';
 	import { agents as starterAgents } from '$lib/agents';
-	import { submitGoal, subscribeToEvents, type StreamSource } from '$lib/api';
+	import { submitGoal, subscribeToEvents, cancelSession, type StreamSource } from '$lib/api';
 	import type { AgentLifecycle, EventEnvelope } from '$lib/types';
 
 	let events: EventEnvelope[] = $state([]);
@@ -19,6 +19,24 @@
 	const agentStatus: Record<string, AgentLifecycle> = $state(
 		Object.fromEntries(starterAgents.map((a) => [a.name.toLowerCase(), 'idle' as AgentLifecycle]))
 	);
+
+	// A session is "done" once we've seen either a completion or a
+	// cancellation for it. The Cancel button only shows while the
+	// session is still running.
+	const sessionTerminated = $derived.by(() => {
+		const set = new Set<string>();
+		if (!activeSessionId) return set;
+		for (const env of events) {
+			if (env.event.session_id !== activeSessionId) continue;
+			const k = env.event.kind;
+			if (k.type === 'session_completed' || k.type === 'session_cancelled') {
+				set.add(env.event.session_id);
+			}
+		}
+		return set;
+	});
+
+	let cancelling = $state(false);
 
 	let streamHandle: ReturnType<typeof subscribeToEvents> | null = null;
 
@@ -68,6 +86,25 @@
 		activeSessionId = null;
 	}
 
+	async function handleCancel() {
+		if (!activeSessionId || cancelling) return;
+		if (streamSource === 'mock') {
+			// Mock mode: just clear locally.
+			activeSessionId = null;
+			events = [];
+			return;
+		}
+		cancelling = true;
+		try {
+			await cancelSession({ session_id: activeSessionId, reason: 'user cancelled' });
+		} catch (err) {
+			console.error('cancel failed', err);
+			alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			cancelling = false;
+		}
+	}
+
 	let settingsOpen = $state(false);
 	let swapTarget: string | null = $state(null);
 	let historyOpen = $state(false);
@@ -114,13 +151,25 @@
 		<div class="flex items-center justify-between gap-2">
 			<GoalInput onSubmit={handleSubmit} />
 			{#if activeSessionId}
-				<button
-					type="button"
-					class="text-base-content/50 hover:text-base-content/80 self-start rounded-md px-2 py-1 text-xs underline"
-					onclick={clearSession}
-				>
-					new session
-				</button>
+				<div class="flex items-center gap-1 self-start">
+					{#if !sessionTerminated.has(activeSessionId)}
+						<button
+							type="button"
+							class="text-rose-300/80 hover:text-rose-200 rounded-md px-2 py-1 text-xs font-medium underline disabled:opacity-50"
+							disabled={cancelling}
+							onclick={handleCancel}
+						>
+							{cancelling ? 'cancelling…' : 'cancel'}
+						</button>
+					{/if}
+					<button
+						type="button"
+						class="text-base-content/50 hover:text-base-content/80 rounded-md px-2 py-1 text-xs underline"
+						onclick={clearSession}
+					>
+						new session
+					</button>
+				</div>
 			{/if}
 		</div>
 		<EventStream {events} {activeSessionId} />

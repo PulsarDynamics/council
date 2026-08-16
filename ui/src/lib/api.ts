@@ -94,6 +94,26 @@ export async function resetAgent(agent: string): Promise<{ dispatched: boolean }
 	return res.json();
 }
 
+export interface CancelSessionRequest {
+	session_id: string;
+	reason?: string;
+}
+
+export async function cancelSession(
+	req: CancelSessionRequest
+): Promise<{ dispatched: boolean; message: string }> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/control/cancel`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(req)
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`cancel failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
 export type StreamSource = 'orchestrator' | 'mock';
 
 export interface StreamHandle {
@@ -211,6 +231,8 @@ export function eventKindLabel(event: Event): string {
 			return 'session';
 		case 'session_completed':
 			return 'session done';
+		case 'session_cancelled':
+			return 'session cancelled';
 		case 'error':
 			return 'error';
 	}

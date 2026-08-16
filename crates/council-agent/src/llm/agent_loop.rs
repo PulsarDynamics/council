@@ -15,6 +15,7 @@ use council_core::{
 };
 use futures::StreamExt;
 use serde_json::json;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -48,12 +49,24 @@ impl AgentLoop {
         Ok(Self { spec, registry, tools })
     }
 
-    /// Run one inbound event through the LLM loop until EndTurn or
-    /// `MAX_ITERATIONS`.
+    /// Run one inbound event through the LLM loop until EndTurn,
+    /// `MAX_ITERATIONS`, or until `cancel` is signalled.
+    ///
+    /// The cancel signal is checked in two places:
+    ///   1. Between iterations — a `select!` decides whether to start
+    ///      the next iteration or exit cleanly.
+    ///   2. Mid-stream — every `stream.next().await` is wrapped in a
+    ///      `select!` so a long-running LLM response can be aborted
+    ///      without waiting for the full response.
+    ///
+    /// On cancel, the loop publishes a `SessionCancelled` event and
+    /// returns `Ok(())` (cancellation isn't an error from the caller's
+    /// point of view; the `SessionCancelled` event is the signal).
     pub async fn run_once<P: BusPublisher + ?Sized>(
         &self,
         trigger: &Event,
         bus: &P,
+        cancel: &Notify,
     ) -> Result<(), LlmError> {
         let provider = self.registry.get(&self.spec.model.provider).ok_or_else(|| {
             LlmError::Config(format!(
@@ -101,6 +114,18 @@ impl AgentLoop {
         };
 
         for iteration in 0..MAX_ITERATIONS {
+            // Cheap non-destructive cancel check at the iteration
+            // boundary. `check_cancel` uses a biased select on the
+            // notify so a fired signal is observed here too, not just
+            // mid-stream. If the user cancelled between the previous
+            // iteration and this one, we exit before starting another
+            // LLM call.
+            if check_cancel(cancel).await {
+                return self
+                    .publish_cancelled(bus, trigger.session_id, "user cancelled")
+                    .await;
+            }
+
             let started = Instant::now();
             let req = CompletionRequest {
                 model: model.clone(),
@@ -114,7 +139,8 @@ impl AgentLoop {
             // becomes an `AgentMessageDelta` event for the UI to append;
             // the final `Done` carries the assembled content + tool calls
             // + token usage, which we use the same way we used to use
-            // `complete()`'s return value.
+            // `complete()`'s return value. The `select!` inside the
+            // loop lets cancel interrupt a long-running stream.
             let mut stream = provider.stream(req);
             let mut accumulated = String::new();
             let mut prompt_tokens: u32 = 0;
@@ -122,8 +148,21 @@ impl AgentLoop {
             let mut stop_reason = StopReason::EndTurn;
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut stream_failed = false;
+            let mut stream_cancelled = false;
 
-            while let Some(chunk_result) = stream.next().await {
+            loop {
+                let chunk_result = tokio::select! {
+                    // Prefer the cancel branch so a fired signal
+                    // pre-empts the in-flight stream read as soon as
+                    // possible.
+                    biased;
+                    _ = cancel.notified() => {
+                        stream_cancelled = true;
+                        None
+                    }
+                    c = stream.next() => c,
+                };
+                let Some(chunk_result) = chunk_result else { break; };
                 match chunk_result {
                     Ok(StreamChunk::Text(delta)) => {
                         if delta.is_empty() {
@@ -189,6 +228,11 @@ impl AgentLoop {
                 }
             }
 
+            if stream_cancelled {
+                return self
+                    .publish_cancelled(bus, trigger.session_id, "user cancelled mid-stream")
+                    .await;
+            }
             if stream_failed {
                 return Err(LlmError::Provider("llm stream failed".into()));
             }
@@ -280,6 +324,48 @@ impl AgentLoop {
         warn!(
             agent = %self.spec.name,
             "llm loop hit MAX_ITERATIONS={MAX_ITERATIONS}; stopping"
+        );
+        Ok(())
+    }
+
+    /// Publish a `SessionCancelled` event on the events bus and return
+    /// `Ok(())` (cancellation isn't a loop error — the event is the
+    /// canonical signal to downstream consumers). Best-effort: a
+    /// publish failure is logged at warn and swallowed so the loop
+    /// still exits cleanly.
+    async fn publish_cancelled<P: BusPublisher + ?Sized>(
+        &self,
+        bus: &P,
+        session_id: Uuid,
+        reason: &str,
+    ) -> Result<(), LlmError> {
+        let _ = bus
+            .publish(&EventEnvelope::new(
+                "broadcast",
+                Event::new(
+                    session_id,
+                    EventKind::SessionCancelled {
+                        reason: reason.to_string(),
+                    },
+                ),
+            ))
+            .await;
+        let _ = bus
+            .publish(&EventEnvelope::new(
+                "broadcast",
+                Event::new(
+                    session_id,
+                    EventKind::AgentStatus {
+                        agent: self.spec.name.clone(),
+                        status: council_core::AgentLifecycle::Idle,
+                    },
+                ),
+            ))
+            .await;
+        info!(
+            agent = %self.spec.name,
+            reason,
+            "session cancelled"
         );
         Ok(())
     }
@@ -448,4 +534,19 @@ pub fn new_session_marker() -> Uuid {
 #[allow(dead_code)]
 pub fn now_iso() -> chrono::DateTime<Utc> {
     Utc::now()
+}
+
+/// Non-destructive check for cancellation. We use a `select!` with a
+/// `ready()` branch as a "not cancelled" sentinel; the `biased` order
+/// tries the cancel branch first, so a fired signal wins immediately
+/// without polling. If no signal is pending, the `ready()` branch
+/// resolves first and the notify future is dropped (it does not
+/// consume a permit). Idempotent — safe to call between every
+/// iteration.
+async fn check_cancel(cancel: &Notify) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancel.notified() => true,
+        _ = futures::future::ready(()) => false,
+    }
 }

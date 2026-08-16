@@ -50,6 +50,16 @@ pub enum ControlEvent {
     /// too); this event is just a fast-path.
     #[serde(rename = "providers_changed")]
     ProvidersChanged,
+    /// "Cancel the agent's work on this session." Sent when the user
+    /// clicks Cancel in the UI; routed by the orchestrator to whichever
+    /// agents are subscribed. The agent should drop any in-flight LLM
+    /// stream and stop iterating, then publish a `SessionCancelled`
+    /// event on the events channel.
+    CancelSession {
+        session_id: uuid::Uuid,
+        #[serde(default)]
+        reason: Option<String>,
+    },
 }
 
 impl ControlEnvelope {
