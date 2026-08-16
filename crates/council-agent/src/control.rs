@@ -1,35 +1,120 @@
 //! Handle control events. The agent subscribes to `council:control` in
 //! addition to its normal channels; this module processes whatever comes
-//! in on that channel. Today: just `SwapProvider`.
+//! in on that channel.
+//!
+//! Today:
+//! - `SwapProvider { agent, provider, model?, reason? }` — hand the
+//!   session off to a new LLM, summarized.
+//! - `ResetSession { agent }` — clear accumulated session state.
+//! - `ProvidersChanged` — the providers file changed; reload it (the
+//!   `notify`-based watcher in `lib.rs` also picks up file changes
+//!   independently; this event is the fast-path).
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use council_core::{
-    ControlEnvelope, ControlEvent, Event, EventEnvelope, EventKind, SessionId, ToolContext,
+    ControlEnvelope, ControlEvent, Event, EventEnvelope, EventKind, ProviderConfig, ProviderKind,
+    SessionId, ToolContext,
 };
 use serde_json::json;
+use tokio::time::interval;
 use tracing::{info, warn};
 
+use crate::llm::agent_loop::MAX_ITERATIONS;
 use crate::llm::{
-    agent_loop::MAX_ITERATIONS, ChatMessage, ChatRole, CompletionRequest, LlmError, LlmProvider,
-    StopReason,
+    providers::{AnthropicProvider, OpenAiChatProvider},
+    ChatMessage, ChatRole, CompletionRequest, LlmError, LlmProvider, StopReason,
 };
 use crate::session::SessionMap;
 use crate::tools::Publisher;
 
+/// In-memory cache of the providers file. A tokio task polls mtime every
+/// second and reloads on change. `lookup_provider` reads from this so a
+/// swap after a file edit picks up the new custom without restarting
+/// the agent.
+///
+/// Uses `std::sync::RwLock` (not tokio's) because the polling task and
+/// lookup both need a sync read/write. The lock is held for microseconds.
+#[derive(Default)]
+pub struct ProvidersState {
+    inner: RwLock<Vec<ProviderConfig>>,
+}
+
+impl ProvidersState {
+    pub fn new(initial: Vec<ProviderConfig>) -> Self {
+        Self {
+            inner: RwLock::new(initial),
+        }
+    }
+    pub fn snapshot(&self) -> Vec<ProviderConfig> {
+        self.inner.read().unwrap().clone()
+    }
+    pub fn replace(&self, next: Vec<ProviderConfig>) {
+        *self.inner.write().unwrap() = next;
+    }
+}
+
+/// Spawn a tokio task that polls the providers file's mtime every second
+/// and reloads on change. Returns a `JoinHandle` (drop to stop).
+///
+/// We use this rather than `notify` because the FSEvents backend
+/// silently fails to deliver events to background processes in some
+/// macOS environments (sandboxing, agent-style processes, etc.). Polling
+/// is reliable; one stat per second per agent is negligible.
+pub fn spawn_providers_watcher(
+    path: std::path::PathBuf,
+    state: Arc<ProvidersState>,
+    on_change: Arc<dyn Fn(Vec<ProviderConfig>) + Send + Sync + 'static>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_mtime: Option<std::time::SystemTime> = None;
+        let mut ticker = interval(Duration::from_secs(1));
+        // First tick fires immediately; consume it.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let meta = match tokio::fs::metadata(&path).await {
+                Ok(m) => m,
+                Err(_) => continue, // file may not exist yet
+            };
+            let mtime = match meta.modified() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if last_mtime == Some(mtime) {
+                continue;
+            }
+            last_mtime = Some(mtime);
+            // Reload.
+            let file = council_core::ProvidersFile::load(&path);
+            let flattened = file.flatten();
+            state.replace(flattened.clone());
+            info!(
+                count = flattened.len(),
+                path = %path.display(),
+                "providers reloaded (mtime)"
+            );
+            on_change(flattened);
+        }
+    })
+}
+
+// Re-export the debounce helper so callers can adjust if needed.
+#[allow(dead_code)]
+const DEBOUNCE_MS: u64 = 100;
+
+// ---------------- swap routine ----------------
+
 /// Read the most recent N events of the given session from a fresh Redis
-/// subscription. Used by the swap routine to pull the agent's *own*
-/// history (the bus alone only gives the events the agent already saw).
-/// For now, the in-memory `SessionState` already has them, so this is a
-/// no-op placeholder for the future.
+/// subscription. Placeholder for a future "replay" feature.
+#[allow(dead_code)]
 async fn _replay_from_bus(_session: SessionId) -> Result<Vec<EventEnvelope>> {
     Ok(Vec::new())
 }
 
-/// The dependencies the swap routine needs. We pass these in (rather than
-/// reading globals) so the routine is testable.
 pub struct SwapDeps {
     pub sessions: Arc<SessionMap>,
     pub provider: Arc<dyn LlmProvider>,
@@ -50,7 +135,6 @@ pub async fn perform_swap(
     new_provider_name: String,
     reason: Option<String>,
 ) -> Result<Vec<ChatMessage>, LlmError> {
-    // 1. Build a context dump from in-memory session state.
     let dump = deps
         .sessions
         .with_mut(deps.session_id, |s| {
@@ -65,8 +149,6 @@ pub async fn perform_swap(
         warn!(agent = %deps.agent_name, "swap requested on empty session; nothing to summarize");
     }
 
-    // 2. Read the files mentioned. Best-effort: skip files that don't
-    //    exist or aren't readable. Cap each at 4KB; cap total at 32KB.
     const PER_FILE_CAP: usize = 4_000;
     const TOTAL_CAP: usize = 32_000;
     let mut file_block = String::new();
@@ -95,9 +177,6 @@ pub async fn perform_swap(
         total += truncated.len();
     }
 
-    // 3. Ask the current LLM to summarize the context. This is the one
-    //    call we make with the OLD provider; everything after uses the
-    //    new one.
     let summary_prompt = format!(
         "Summarize the following session so a fresh LLM can pick up where \
          this one left off. Be concrete: what's the goal, what's been \
@@ -127,8 +206,6 @@ pub async fn perform_swap(
         "swap: produced handoff summary"
     );
 
-    // 4. Build the new context: summary first, then files. This becomes
-    //    the seed for the next LLM call.
     let mut new_history: Vec<ChatMessage> = Vec::new();
     new_history.push(ChatMessage {
         role: ChatRole::User,
@@ -159,7 +236,6 @@ pub async fn perform_swap(
         tool_calls: None,
     });
 
-    // 5. Publish a system event so the UI sees what happened.
     let _ = deps
         .publisher
         .publish(&EventEnvelope::new(
@@ -183,16 +259,10 @@ pub async fn perform_swap(
         ))
         .await;
 
-    // Touch the new provider so the compiler doesn't drop it.
-    let _ = new_provider.name();
-    let _ = new_model;
-
     Ok(new_history)
 }
 
-/// Process a `ControlEnvelope` arriving on the control channel. Returns
-/// `Some(SwapOutcome)` if the event was a `SwapProvider` for the agent
-/// and a swap was performed. Returns `None` if the event didn't apply.
+/// Process a `ControlEnvelope` arriving on the control channel.
 pub async fn handle_control(
     env: &ControlEnvelope,
     agent_name: &str,
@@ -202,6 +272,7 @@ pub async fn handle_control(
     temperature: f32,
     sessions: Arc<SessionMap>,
     publisher: Arc<dyn Publisher>,
+    providers: Arc<ProvidersState>,
 ) -> Result<Option<SwapOutcome>, LlmError> {
     match &env.event {
         ControlEvent::SwapProvider {
@@ -213,11 +284,9 @@ pub async fn handle_control(
             if agent != agent_name {
                 return Ok(None);
             }
-            // Find the named provider in the registry. The agent process
-            // has its own registry; we look it up by name.
-            let new_provider = lookup_provider(provider).ok_or_else(|| {
+            let new_provider = lookup_provider_with(&providers, provider).ok_or_else(|| {
                 LlmError::Config(format!(
-                    "swap requested unknown provider {provider:?}; add it in the UI or env first"
+                    "swap requested unknown provider {provider:?}; add it in the UI or providers.toml first"
                 ))
             })?;
             let new_model = model.clone().unwrap_or_else(|| new_provider.default_model().to_string());
@@ -256,6 +325,18 @@ pub async fn handle_control(
             info!(agent = agent_name, "session reset by control event");
             Ok(None)
         }
+        ControlEvent::ProvidersChanged => {
+            // The notify watcher also reloads on file mtime change; this
+            // is the fast-path after an in-process POST/DELETE. Force
+            // a fresh load so we don't depend on the watcher's debounce
+            // window.
+            let path = council_core::default_providers_path();
+            let file = council_core::ProvidersFile::load(&path);
+            let flat = file.flatten();
+            providers.replace(flat.clone());
+            info!(count = flat.len(), "providers reloaded by control event");
+            Ok(None)
+        }
     }
 }
 
@@ -266,21 +347,25 @@ pub struct SwapOutcome {
     pub session_id: SessionId,
 }
 
-/// Look up a provider by name. The agent process holds a registry; we
-/// re-resolve here so a hot-swap to a newly-added custom is possible
-/// once the orchestrator has written it to `providers.toml`.
-///
-/// Order:
-/// 1. The three built-ins (openai, openai-responses, anthropic) — these
-///    ignore the `base_url` etc. that might be in the file and use the
-///    canonical defaults; env vars (`OPENAI_API_KEY` /
-///    `ANTHROPIC_API_KEY` / `OPENAI_BASE_URL`) still apply.
-/// 2. A custom entry in `providers.toml` — read each call so the UI can
-///    add/remove providers without restarting the agent.
-fn lookup_provider(name: &str) -> Option<Arc<dyn LlmProvider>> {
-    use crate::llm::providers::{AnthropicProvider, OpenAiChatProvider, OpenAiResponsesProvider};
+async fn pick_recent_session(sessions: &SessionMap) -> SessionId {
+    sessions
+        .first_session_id()
+        .await
+        .unwrap_or_else(uuid::Uuid::new_v4)
+}
 
-    // Built-ins first.
+/// Look up a provider by name. Reads from the in-memory `ProvidersState`
+/// first (so the file-watcher reload is visible immediately), then falls
+/// through to built-ins. Synchronous — the state lock is held for
+/// microseconds.
+pub fn lookup_provider_with(
+    state: &ProvidersState,
+    name: &str,
+) -> Option<Arc<dyn LlmProvider>> {
+    use crate::llm::providers::{
+        AnthropicProvider, OpenAiChatProvider, OpenAiResponsesProvider,
+    };
+    // 1. Built-ins.
     if matches!(name, "openai" | "openai-chat") {
         return Some(Arc::new(OpenAiChatProvider::new()));
     }
@@ -290,33 +375,21 @@ fn lookup_provider(name: &str) -> Option<Arc<dyn LlmProvider>> {
     if name == "anthropic" {
         return Some(Arc::new(AnthropicProvider::new()));
     }
-
-    // Then custom entries from providers.toml. The agent applies the
-    // file's base_url to the appropriate built-in impl, and pushes the
-    // api key into env so the impl picks it up at call time.
-    let path = council_core::default_providers_path();
-    let file = council_core::ProvidersFile::load(&path);
-    let entry = file.providers.get(name)?.clone();
+    // 2. Custom from the in-memory state (kept fresh by notify).
+    let snapshot = state.snapshot();
+    let entry = snapshot.into_iter().find(|c| c.name == name)?;
+    let upper = name.to_uppercase();
     if !entry.api_key.is_empty() {
-        std::env::set_var(
-            format!("COUNCIL_PROVIDER_{}_API_KEY", name.to_uppercase()),
-            &entry.api_key,
-        );
+        std::env::set_var(format!("COUNCIL_PROVIDER_{upper}_API_KEY"), &entry.api_key);
+    }
+    if !entry.base_url.is_empty() {
+        std::env::set_var(format!("COUNCIL_PROVIDER_{upper}_BASE_URL"), &entry.base_url);
     }
     let provider: Arc<dyn LlmProvider> = match entry.kind {
-        council_core::ProviderKind::AnthropicMessages => {
-            Arc::new(AnthropicProvider::with_base_url(entry.base_url))
-        }
+        ProviderKind::AnthropicMessages => Arc::new(AnthropicProvider::with_base_url(entry.base_url)),
         _ => Arc::new(OpenAiChatProvider::with_base_url(entry.base_url)),
     };
     Some(provider)
-}
-
-async fn pick_recent_session(sessions: &SessionMap) -> SessionId {
-    sessions
-        .first_session_id()
-        .await
-        .unwrap_or_else(uuid::Uuid::new_v4)
 }
 
 #[allow(dead_code)]

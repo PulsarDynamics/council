@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+notify = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

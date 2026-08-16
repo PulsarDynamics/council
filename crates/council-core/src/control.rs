@@ -44,6 +44,12 @@ pub enum ControlEvent {
     ResetSession {
         agent: String,
     },
+    /// "The providers file changed — reload it." Sent by the orchestrator
+    /// right after a POST/DELETE on /api/providers. The agent ALSO
+    /// watches the file via `notify` (so hand-edits are picked up
+    /// too); this event is just a fast-path.
+    #[serde(rename = "providers_changed")]
+    ProvidersChanged,
 }
 
 impl ControlEnvelope {

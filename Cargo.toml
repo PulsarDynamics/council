@@ -45,6 +45,9 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 # LLM HTTP (agent)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# File watcher (agent)
+notify = "6"
+
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

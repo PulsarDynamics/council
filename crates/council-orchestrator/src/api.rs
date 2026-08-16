@@ -143,6 +143,7 @@ pub struct UpsertProviderResponse {
 }
 
 pub async fn upsert_provider(
+    State(state): State<Arc<crate::state::AppState>>,
     Json(req): Json<UpsertProviderRequest>,
 ) -> Result<Json<UpsertProviderResponse>, (StatusCode, String)> {
     let name = req.name.trim().to_string();
@@ -170,6 +171,7 @@ pub async fn upsert_provider(
         },
     );
     f.save(&path).map_err(internal)?;
+    notify_agents(&state).await;
     Ok(Json(UpsertProviderResponse {
         path: path.to_string_lossy().to_string(),
         wrote: true,
@@ -177,6 +179,7 @@ pub async fn upsert_provider(
 }
 
 pub async fn delete_provider(
+    State(state): State<Arc<crate::state::AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<UpsertProviderResponse>, (StatusCode, String)> {
     let path = default_providers_path();
@@ -185,10 +188,24 @@ pub async fn delete_provider(
         return Err((StatusCode::NOT_FOUND, format!("no provider named {name:?}")));
     }
     f.save(&path).map_err(internal)?;
+    notify_agents(&state).await;
     Ok(Json(UpsertProviderResponse {
         path: path.to_string_lossy().to_string(),
         wrote: true,
     }))
+}
+
+/// Tell the agents the providers file changed. Best-effort — the
+/// `notify` watcher in each agent would also pick it up, but the
+/// control event is a fast-path so a swap that follows immediately
+/// after a write doesn't have to wait for the debounce window.
+async fn notify_agents(state: &Arc<crate::state::AppState>) {
+    let env = ControlEnvelope {
+        event: ControlEvent::ProvidersChanged,
+    };
+    if let Err(e) = state.bus.publish_control(&env).await {
+        tracing::warn!(error = %e, "failed to publish ProvidersChanged control event");
+    }
 }
 
 // ---------------- control plane ----------------

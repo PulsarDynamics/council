@@ -25,7 +25,7 @@ mod session;
 mod tools;
 
 use bus::AgentBus;
-use control::handle_control;
+use control::{handle_control, lookup_provider_with, spawn_providers_watcher, ProvidersState};
 use llm::agent_loop::AgentLoop;
 use llm::ProviderRegistry;
 use session::{SessionMap, SessionState};
@@ -86,6 +86,25 @@ pub async fn run(config_path: &Path) -> Result<()> {
     }));
     let sessions = Arc::new(SessionMap::new());
 
+    // Watch providers.toml so swaps can pick up new customs without
+    // restarting the agent. The watcher's initial load populates the
+    // shared in-memory state.
+    let providers_state = Arc::new(ProvidersState::new(
+        council_core::ProvidersFile::load(&council_core::default_providers_path()).flatten(),
+    ));
+    let on_change: Arc<dyn Fn(Vec<council_core::ProviderConfig>) + Send + Sync> =
+        Arc::new(|list: Vec<council_core::ProviderConfig>| {
+            info!(
+                count = list.len(),
+                "providers reloaded (mtime)"
+            );
+        });
+    let _watcher = spawn_providers_watcher(
+        council_core::default_providers_path(),
+        providers_state.clone(),
+        on_change,
+    );
+
     let loop_runner = Arc::new(AgentLoop::from_spec(spec.clone(), registry, tools).map_err(
         |e| anyhow::anyhow!(e),
     )?);
@@ -128,6 +147,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
                     &sessions,
                     &loop_runner,
                     publisher.clone(),
+                    providers_state.clone(),
                 ).await;
             }
             evt = events.next() => {
@@ -155,6 +175,7 @@ async fn handle_control_event(
     sessions: &Arc<SessionMap>,
     loop_runner: &Arc<AgentLoop>,
     publisher: Arc<dyn Publisher>,
+    providers_state: Arc<ProvidersState>,
 ) {
     // Snapshot current provider/model for the swap routine.
     let (current_provider, current_model) = {
@@ -170,6 +191,7 @@ async fn handle_control_event(
         spec.model.temperature,
         sessions.clone(),
         publisher.clone(),
+        providers_state.clone(),
     )
     .await;
     match outcome {
