@@ -49,8 +49,9 @@
 	--radius-lg: var(--radius);
 
 	/* Backwards-compat aliases (daisyUI-style names used by older
-	 * components — kept so HistorySidebar / SettingsPanel / etc. still
-	 * style correctly until they're updated). */
+	 * components — kept so any remaining third-party / template
+	 * components still style correctly). */
+
 	--color-base-100: var(--background);
 	--color-base-200: var(--card);
 	--color-base-300: var(--muted);

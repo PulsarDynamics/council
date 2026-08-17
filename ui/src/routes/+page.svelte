@@ -4,11 +4,7 @@
 	import Composer from '$lib/components/Composer.svelte';
 	import EventStream from '$lib/components/EventStream.svelte';
 	import FlowGraph from '$lib/components/FlowGraph.svelte';
-	import HistorySidebar from '$lib/components/HistorySidebar.svelte';
 	import Inspector from '$lib/components/Inspector.svelte';
-	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
-	import SwapProviderModal from '$lib/components/SwapProviderModal.svelte';
-	import TopNav from '$lib/components/TopNav.svelte';
 	import { agentsWithAccent } from '$lib/agentColors';
 	import {
 		cancelSession,
@@ -23,21 +19,22 @@
 	 * Chamber-1 visual rework.
 	 *
 	 *   ┌────────────────────────────────────────────────────────────────┐
-	 *   │  COUNCIL · live · N events                       [ console … ] │  ← top bar
-	 *   ├──────────┬───────────────────────────────────┬─────────────────┤
-	 *   │          │  bus  ●── goal ─ plan ─ spec ─ …   │                 │
-	 *   │ Agents   ├───────────────────────────────────┤   Inspector     │
-	 *   │  ● plan  │                                   │                 │
-	 *   │  ● desi  │       [event stream]              │                 │
-	 *   │  ● impl  │                                   │                 │
-	 *   │          │                                   │                 │
-	 *   ├──────────┴───────────────────────────────────┴─────────────────┤
-	 *   │   [textarea: state a goal…]  [suggestions…]  [×] [↺] [convene →] │  ← composer
+	 *   │  Agents    │  bus  ●── goal ─ plan ─ spec ─ …  │   Inspector   │
+	 *   │   ● plan   ├───────────────────────────────────┤               │
+	 *   │   ● desi   │                                   │               │
+	 *   │   ● impl   │       [event stream]              │               │
+	 *   │            │                                   │               │
+	 *   ├────────────┴───────────────────────────────────┴───────────────┤
+	 *   │   [textarea: state a goal…]  [suggestions…]  [×] [↺] [convene →] │
 	 *   └────────────────────────────────────────────────────────────────┘
 	 *
-	 * Wires up to the real orchestrator over WebSocket; cancel / history /
-	 * settings remain modal-style so we don't have to carve out full
-	 * route pages for them in this pass.
+	 * Wires up to the real orchestrator over WebSocket. The shared
+	 * header (wordmark + nav) lives in +layout.svelte; this page owns
+	 * its own thin status sub-header (live indicator, source, status,
+	 * event count) and the 3-column body.
+	 *
+	 * History / settings used to be modals opened from the top nav;
+	 * they are now real SvelteKit routes (see /history and /settings).
 	 */
 
 	let events: EventEnvelope[] = $state([]);
@@ -85,9 +82,6 @@
 
 	let composerGoal: string = $state('');
 	let cancelling = $state(false);
-	let settingsOpen = $state(false);
-	let swapTarget: string | null = $state(null);
-	let historyOpen = $state(false);
 
 	let streamHandle: ReturnType<typeof subscribeToEvents> | null = null;
 
@@ -188,18 +182,6 @@
 			: [...channelFilter, c];
 	}
 
-	function openSettings() {
-		settingsOpen = true;
-	}
-	function openHistory() {
-		historyOpen = true;
-	}
-	function handleNav(target: 'console' | 'history' | 'settings') {
-		if (target === 'history') openHistory();
-		else if (target === 'settings') openSettings();
-		// 'console' is the current page — no-op.
-	}
-
 	// Status word at the top of the header.
 	const statusLabel = $derived.by(() => {
 		if (!activeSessionId) return 'standby';
@@ -218,56 +200,33 @@
 	});
 </script>
 
-<SettingsPanel open={settingsOpen} onClose={() => (settingsOpen = false)} />
-<SwapProviderModal
-	open={swapTarget !== null}
-	agent={swapTarget}
-	onClose={() => (swapTarget = null)}
-/>
-<HistorySidebar
-	open={historyOpen}
-	onClose={() => (historyOpen = false)}
-	onPickSession={(id) => {
-		activeSessionId = id;
-		historyOpen = false;
-	}}
-/>
+<svelte:head>
+	<title>Console · Council</title>
+</svelte:head>
 
-<header
-	class="border-border bg-background/95 sticky top-0 z-20 flex items-center gap-4 border-b px-4 py-3 backdrop-blur"
->
-	<div class="flex items-center gap-2">
-		<svg
-			viewBox="0 0 24 24"
-			class="text-primary size-4"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-		>
-			<circle cx="12" cy="5" r="2" />
-			<circle cx="5" cy="18" r="2" />
-			<circle cx="19" cy="18" r="2" />
-			<path d="M12 7 L 6 16 M 12 7 L 18 16" />
-		</svg>
-		<h1 class="font-mono text-[15px] font-semibold tracking-[0.32em] uppercase">Council</h1>
-	</div>
-	<span class="text-muted-foreground hidden font-mono text-[11px] sm:inline">
-		multi-agent orchestration · {sourceLabel}
-	</span>
-
-	<div class="ml-auto flex items-center gap-3 font-mono text-[11px]">
+<main class="flex h-[calc(100vh-3.5rem)] flex-col">
+	<!-- Thin status sub-header. Lives inside the page (not the
+	     shared layout) so the chrome can show page-specific state —
+	     live indicator, source, session status, event count. -->
+	<div
+		class="border-border bg-background/60 text-muted-foreground flex items-center gap-3 border-b px-4 py-1.5 font-mono text-[11px]"
+	>
 		<span
 			class="size-1.5 rounded-full {isLive
 				? 'bg-primary animate-pulse'
 				: 'bg-muted-foreground/50'}"
 		></span>
-		<span class="text-muted-foreground">{statusLabel}</span>
-		<span class="text-muted-foreground">{events.length} events</span>
-		<TopNav active="console" onNavigate={handleNav} />
+		<span>{sourceLabel}</span>
+		<span class="text-muted-foreground/50">·</span>
+		<span>{statusLabel}</span>
+		<span class="text-muted-foreground/50">·</span>
+		<span>{events.length} events</span>
+		{#if activeSessionId}
+			<span class="text-muted-foreground/50">·</span>
+			<span class="text-muted-foreground/70">{activeSessionId.slice(0, 8)}</span>
+		{/if}
 	</div>
-</header>
 
-<main class="flex h-[calc(100vh-3.5rem)] flex-col">
 	<div class="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_300px]">
 		<aside class="border-border hidden min-h-0 border-r lg:block">
 			<AgentRail
