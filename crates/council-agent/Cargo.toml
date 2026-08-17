@@ -48,3 +48,4 @@ dead_code = "allow"
 
 [dev-dependencies]
 wiremock = "0.6"
+tempfile = "3"

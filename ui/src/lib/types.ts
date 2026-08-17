@@ -59,3 +59,14 @@ export interface Session {
 	created_at: string;
 	completed_at?: string;
 }
+
+/**
+ * API request body for POST /api/control/fork. The orchestrator
+ * publishes a `fork_session` control event; the named agent reads
+ * the source session's events from Redis, mints a new session id,
+ * and seeds its pending chat history.
+ */
+export interface ForkSessionRequest {
+	source_session_id: SessionId;
+	agent: string;
+}

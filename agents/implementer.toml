@@ -36,5 +36,6 @@ Constraints:
 [tools]
 allowed = [
   "read_file", "write_file", "edit_file", "list_dir",
-  "run_command", "search_code", "ask_user", "delegate_to"
+  "run_command", "search_code", "ask_user", "delegate_to",
+  "git_status", "git_diff", "git_log", "git_commit"
 ]

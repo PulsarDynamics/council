@@ -449,6 +449,7 @@ fn shell_escape(s: &str) -> String {
 /// Built-in toolset. The agent passes its TOML `[tools].allowed` list
 /// through this filter to produce the per-agent registry.
 pub fn builtin_tools(publisher: Arc<dyn Publisher>) -> Vec<Arc<dyn Tool>> {
+    use crate::tools_git::{GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};
     use crate::tools_web::{
         open_memory, MemoryDeleteTool, MemoryGetTool, MemoryListTool, MemorySearchTool,
         MemorySetTool, WebSearchTool,
@@ -474,6 +475,10 @@ pub fn builtin_tools(publisher: Arc<dyn Publisher>) -> Vec<Arc<dyn Tool>> {
     v.push(Arc::new(MemoryDeleteTool(memory.clone())));
     v.push(Arc::new(MemoryListTool(memory.clone())));
     v.push(Arc::new(MemorySearchTool(memory)));
+    v.push(Arc::new(GitStatusTool));
+    v.push(Arc::new(GitDiffTool));
+    v.push(Arc::new(GitLogTool));
+    v.push(Arc::new(GitCommitTool));
     v
 }
 

@@ -23,6 +23,7 @@ mod control;
 mod llm;
 mod session;
 mod tools;
+mod tools_git;
 mod tools_web;
 
 use bus::AgentBus;
@@ -269,7 +270,7 @@ fn spawn_event_handler(
         let cancel = sessions_for_cancel.cancel_token(session_id).await;
 
         if let Err(e) = runner
-            .run_once(&env.event, bus.as_ref(), &cancel)
+            .run_once(&env.event, bus.as_ref(), &cancel, &sessions_for_cancel)
             .await
         {
             warn!(agent = %spec_name, error = %e, "llm loop failed");

@@ -4,7 +4,7 @@
 // UI is previewable without a running orchestrator). The orchestrator itself
 // runs at the URL the Vite dev server proxies /api and /ws to.
 
-import type { Event, EventEnvelope } from './types';
+import type { Event, EventEnvelope, ForkSessionRequest } from './types';
 import { startMockStream } from './mock';
 
 const ORCHESTRATOR_BASE: string = (import.meta.env.VITE_COUNCIL_API as string | undefined) ?? '';
@@ -110,6 +110,23 @@ export async function cancelSession(
 	if (!res.ok) {
 		const text = await res.text();
 		throw new Error(`cancel failed: ${res.status} ${text}`);
+	}
+	return res.json();
+}
+
+// ---------------- session fork ----------------
+
+export async function forkSession(
+	req: ForkSessionRequest
+): Promise<{ dispatched: boolean; message: string }> {
+	const res = await fetch(`${ORCHESTRATOR_BASE}/api/control/fork`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(req)
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new Error(`fork failed: ${res.status} ${text}`);
 	}
 	return res.json();
 }

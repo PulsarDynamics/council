@@ -23,6 +23,7 @@ use super::{
     registry::load_config, ChatMessage, ChatRole, CompletionRequest, LlmError, LlmProvider,
     ProviderRegistry, StopReason, StreamChunk, ToolCall, ToolSpec,
 };
+use crate::session::SessionMap;
 
 /// Max LLM iterations per incoming event. Prevents runaway loops if the
 /// LLM keeps calling tools.
@@ -62,11 +63,18 @@ impl AgentLoop {
     /// On cancel, the loop publishes a `SessionCancelled` event and
     /// returns `Ok(())` (cancellation isn't an error from the caller's
     /// point of view; the `SessionCancelled` event is the signal).
+    ///
+    /// `sessions` is consulted for a `pending_history` slot (set by
+    /// the swap or fork handlers). If present, those messages are
+    /// prepended to the trigger, so the LLM sees the seeded context
+    /// before the live event for the same session. The slot is
+    /// cleared on read (one-shot).
     pub async fn run_once<P: BusPublisher + ?Sized>(
         &self,
         trigger: &Event,
         bus: &P,
         cancel: &Notify,
+        sessions: &SessionMap,
     ) -> Result<(), LlmError> {
         let provider = self.registry.get(&self.spec.model.provider).ok_or_else(|| {
             LlmError::Config(format!(
@@ -89,8 +97,21 @@ impl AgentLoop {
             config.default_model.clone()
         };
 
-        // Build the initial chat history from the system prompt + trigger.
+        // Build the initial chat history. If a swap or fork handler
+        // queued a seed for this session, splice it in BEFORE the
+        // trigger so the LLM has the prior context already on the
+        // first call. The trigger still becomes the last user turn
+        // for this call.
         let mut messages: Vec<ChatMessage> = Vec::new();
+        if let Some(pending) = sessions.take_pending(trigger.session_id).await {
+            info!(
+                agent = %self.spec.name,
+                session = %trigger.session_id,
+                seed_messages = pending.len(),
+                "llm loop: consuming pending history (swap/fork seed)"
+            );
+            messages.extend(pending);
+        }
         messages.push(ChatMessage {
             role: ChatRole::User,
             content: render_trigger(trigger),

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { listSessions, type SessionMeta } from '$lib/api';
-	import { getSessionEvents, type StreamSource } from '$lib/api';
+	import { getSessionEvents, forkSession, type StreamSource } from '$lib/api';
 	import EventItem from './EventItem.svelte';
 	import type { EventEnvelope } from '$lib/types';
 
@@ -9,14 +9,32 @@
 		open: boolean;
 		onClose: () => void;
 		onPickSession?: (sessionId: string) => void;
+		/**
+		 * Which agent to fork into. The default ("planner") is the
+		 * entry point agent in the current TOML config; users with
+		 * other configurations can pass a different name.
+		 */
+		defaultForkAgent?: string;
 	}
-	let { open, onClose, onPickSession }: Props = $props();
+	let {
+		open,
+		onClose,
+		onPickSession,
+		defaultForkAgent = 'planner'
+	}: Props = $props();
 
 	let sessions: SessionMeta[] = $state([]);
 	let loadError = $state('');
 	let activeSessionId: string | null = $state(null);
 	let activeEvents: EventEnvelope[] = $state([]);
 	let loadingEvents = $state(false);
+
+	// Per-session fork state: which session id (if any) is currently
+	// dispatching a fork, and the most recent toast (success or error).
+	// Kept as a map keyed by session id so concurrent forks of
+	// different sessions don't trample each other.
+	let forkingIds: Set<string> = $state(new Set());
+	let forkToast: { kind: 'ok' | 'err'; message: string } | null = $state(null);
 
 	async function refresh() {
 		loadError = '';
@@ -40,6 +58,37 @@
 			loadingEvents = false;
 		}
 		onPickSession?.(id);
+	}
+
+	async function forkOne(id: string) {
+		if (forkingIds.has(id)) return;
+		// Svelte 5: mutate a Set in place by reassigning the property
+		// the rune is bound to. A new Set keeps the reactivity simple.
+		const next = new Set(forkingIds);
+		next.add(id);
+		forkingIds = next;
+		forkToast = null;
+		try {
+			const res = await forkSession({
+				source_session_id: id,
+				agent: defaultForkAgent
+			});
+			forkToast = { kind: 'ok', message: res.message };
+			// The new session is published as SessionCreated on the
+			// broadcast channel; the orchestrator's persistence task
+			// writes a fresh meta hash and the sidebar will pick it
+			// up on the next refresh. Refresh immediately for UX.
+			await refresh();
+		} catch (e) {
+			forkToast = {
+				kind: 'err',
+				message: e instanceof Error ? e.message : String(e)
+			};
+		} finally {
+			const after = new Set(forkingIds);
+			after.delete(id);
+			forkingIds = after;
+		}
 	}
 
 	function relativeTime(iso: string): string {
@@ -98,6 +147,15 @@
 			{#if loadError}
 				<p class="text-rose-400 px-5 py-3 text-xs">{loadError}</p>
 			{/if}
+			{#if forkToast}
+				<div
+					class="px-5 py-2 text-xs"
+					class:text-emerald-300={forkToast.kind === 'ok'}
+					class:text-rose-300={forkToast.kind === 'err'}
+				>
+					{forkToast.message}
+				</div>
+			{/if}
 			{#if sessions.length === 0 && !loadError}
 				<p class="text-base-content/40 px-5 py-6 text-center text-sm">
 					No sessions yet. Submit a goal to start one.
@@ -105,10 +163,10 @@
 			{:else}
 				<ul class="divide-base-300/40 divide-y">
 					{#each sessions as s (s.id)}
-						<li>
+						<li class="group flex items-stretch">
 							<button
 								type="button"
-								class="hover:bg-base-200/40 w-full px-5 py-3 text-left transition"
+								class="hover:bg-base-200/40 flex-1 px-5 py-3 text-left transition"
 								class:bg-base-200={activeSessionId === s.id}
 								onclick={() => pickSession(s.id)}
 							>
@@ -134,6 +192,21 @@
 									<span class="font-mono">{s.id.slice(0, 8)}</span>
 								</div>
 							</button>
+							<!-- Fork action: separate button so clicking it
+							     doesn't toggle the active session. Disabled
+							     while a fork is in flight for this row. -->
+							<div class="flex items-center pr-3">
+								<button
+									type="button"
+									class="rounded-md border border-base-300/60 px-2 py-1 text-[10px] uppercase tracking-wide opacity-60 transition group-hover:opacity-100 hover:bg-base-200 disabled:cursor-not-allowed disabled:opacity-40"
+									disabled={forkingIds.has(s.id)}
+									aria-label="Fork session {s.id.slice(0, 8)}"
+									title="Fork this session into a new one with the same context"
+									onclick={() => forkOne(s.id)}
+								>
+									{forkingIds.has(s.id) ? 'forking…' : 'fork'}
+								</button>
+							</div>
 						</li>
 					{/each}
 				</ul>

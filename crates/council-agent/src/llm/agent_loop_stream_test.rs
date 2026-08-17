@@ -18,6 +18,7 @@
 use super::agent_loop::AgentLoop;
 use super::providers::OpenAiChatProvider;
 use super::ProviderRegistry;
+use crate::session::SessionMap;
 use async_trait::async_trait;
 use council_core::{
     AgentSpec, Event, EventEnvelope, EventKind, ModelConfig, PromptConfig, ToolsConfig,
@@ -180,7 +181,7 @@ async fn agent_loop_emits_deltas_then_final_message_via_stream() {
             content: "say hello".into(),
         },
     );
-    loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new()).await.expect("loop ok");
+    loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new(), &SessionMap::new()).await.expect("loop ok");
 
     // 6. Inspect what the loop published.
     let events = bus.events.lock().unwrap().clone();
@@ -307,7 +308,7 @@ async fn agent_loop_does_not_emit_message_event_when_response_is_tool_only() {
     // We expect this to return Ok even with empty tools — the agent
     // records the turn and ends. (In a real run with tools available,
     // it would call the tool and then either continue or EndTurn.)
-    let result = loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new()).await;
+    let result = loop_.run_once(&trigger, &bus, &tokio::sync::Notify::new(), &SessionMap::new()).await;
     if let Err(ref e) = result {
         // Print the captured error events for debugging the failure
         // path — the second iteration's mock SSE body might not
@@ -394,7 +395,7 @@ async fn agent_loop_aborts_mid_stream_when_cancel_is_signalled() {
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        loop_.run_once(&trigger, &bus, &cancel_clone).await
+        loop_.run_once(&trigger, &bus, &cancel_clone, &SessionMap::new()).await
     });
     // Give the agent time to enter `stream.next().await`, then cancel.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -467,7 +468,7 @@ async fn agent_loop_aborts_between_iterations_when_cancel_precedes_run() {
     // Pre-cancel before the loop runs.
     cancel.notify_one();
 
-    let result = loop_.run_once(&trigger, &bus, &cancel).await;
+    let result = loop_.run_once(&trigger, &bus, &cancel, &SessionMap::new()).await;
     assert!(result.is_ok());
 
     let events = events.lock().unwrap_or_else(|e| e.into_inner()).clone();

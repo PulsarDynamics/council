@@ -1,6 +1,121 @@
 <script lang="ts">
+	import { Marked, type Tokens } from 'marked';
+	import hljs from 'highlight.js/lib/core';
+	import rust from 'highlight.js/lib/languages/rust';
+	import python from 'highlight.js/lib/languages/python';
+	import javascript from 'highlight.js/lib/languages/javascript';
+	import typescript from 'highlight.js/lib/languages/typescript';
+	import json from 'highlight.js/lib/languages/json';
+	import bash from 'highlight.js/lib/languages/bash';
+	import xml from 'highlight.js/lib/languages/xml';
+	import css from 'highlight.js/lib/languages/css';
+	import yaml from 'highlight.js/lib/languages/yaml';
+	import ini from 'highlight.js/lib/languages/ini';
+	import markdownLang from 'highlight.js/lib/languages/markdown';
+	import sql from 'highlight.js/lib/languages/sql';
+	import go from 'highlight.js/lib/languages/go';
+	import java from 'highlight.js/lib/languages/java';
+	import c from 'highlight.js/lib/languages/c';
+	import cpp from 'highlight.js/lib/languages/cpp';
+	import ruby from 'highlight.js/lib/languages/ruby';
+	import php from 'highlight.js/lib/languages/php';
+	import diff from 'highlight.js/lib/languages/diff';
+	import plaintext from 'highlight.js/lib/languages/plaintext';
+	import DOMPurify from 'dompurify';
+	import 'highlight.js/styles/github-dark.min.css';
 	import type { Event, EventEnvelope } from '$lib/types';
 	import { eventKindLabel } from '$lib/api';
+
+	// Register the languages we care about with the core highlight.js instance.
+	// We map common short aliases (js, ts, sh, …) to their full modules so that
+	// model output like ```rust or ```js lights up correctly.
+	hljs.registerLanguage('rust', rust);
+	hljs.registerLanguage('rs', rust);
+	hljs.registerLanguage('python', python);
+	hljs.registerLanguage('py', python);
+	hljs.registerLanguage('javascript', javascript);
+	hljs.registerLanguage('js', javascript);
+	hljs.registerLanguage('jsx', javascript);
+	hljs.registerLanguage('typescript', typescript);
+	hljs.registerLanguage('ts', typescript);
+	hljs.registerLanguage('tsx', typescript);
+	hljs.registerLanguage('json', json);
+	hljs.registerLanguage('bash', bash);
+	hljs.registerLanguage('sh', bash);
+	hljs.registerLanguage('shell', bash);
+	hljs.registerLanguage('html', xml);
+	hljs.registerLanguage('xml', xml);
+	hljs.registerLanguage('svg', xml);
+	hljs.registerLanguage('css', css);
+	hljs.registerLanguage('yaml', yaml);
+	hljs.registerLanguage('yml', yaml);
+	hljs.registerLanguage('toml', ini);
+	hljs.registerLanguage('ini', ini);
+	hljs.registerLanguage('markdown', markdownLang);
+	hljs.registerLanguage('md', markdownLang);
+	hljs.registerLanguage('sql', sql);
+	hljs.registerLanguage('go', go);
+	hljs.registerLanguage('golang', go);
+	hljs.registerLanguage('java', java);
+	hljs.registerLanguage('c', c);
+	hljs.registerLanguage('cpp', cpp);
+	hljs.registerLanguage('c++', cpp);
+	hljs.registerLanguage('cxx', cpp);
+	hljs.registerLanguage('ruby', ruby);
+	hljs.registerLanguage('rb', ruby);
+	hljs.registerLanguage('php', php);
+	hljs.registerLanguage('diff', diff);
+	hljs.registerLanguage('patch', diff);
+	hljs.registerLanguage('plaintext', plaintext);
+	hljs.registerLanguage('text', plaintext);
+	hljs.registerLanguage('txt', plaintext);
+
+	// Single Marked instance with a custom `code` renderer that pipes fenced
+	// blocks through highlight.js. GFM + breaks so newlines in agent output
+	// survive the round trip.
+	const md = new Marked({
+		gfm: true,
+		breaks: true,
+		renderer: {
+			code(token: Tokens.Code): string {
+				const lang = (token.lang ?? '').trim().toLowerCase();
+				const code = token.text;
+				if (lang && hljs.getLanguage(lang)) {
+					try {
+						const out = hljs.highlight(code, { language: lang, ignoreIllegals: true });
+						return `<pre><code class="hljs language-${lang}">${out.value}</code></pre>`;
+					} catch {
+						// fall through to escaped plain text
+					}
+				}
+				const escaped = escapeHtml(code);
+				return `<pre><code>${escaped}</code></pre>`;
+			}
+		}
+	});
+
+	function escapeHtml(s: string): string {
+		return s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	// DOMPurify needs a DOM. In SSR (no `window`) we just return the marked
+	// output un-sanitized; the events that drive this component arrive over a
+	// WebSocket, so SSR only ever sees an empty body. In the browser we run the
+	// full sanitizer with the default tag/attr allow list (which already
+	// permits `class` — needed for highlight.js spans — and `href`).
+	function renderMarkdown(src: string): string {
+		if (!src) return '';
+		const html = md.parse(src, { async: false }) as string;
+		if (typeof window === 'undefined') return html;
+		return DOMPurify.sanitize(html, {
+			USE_PROFILES: { html: true }
+		});
+	}
 
 	interface Props {
 		envelope: EventEnvelope;
@@ -170,6 +285,8 @@
 	const body = $derived(bodyFor(event));
 	const extra = $derived(extraFor(event));
 	const hasExtra = $derived(extra.length > 0);
+	const parsedBody = $derived(renderMarkdown(body));
+	const parsedExtra = $derived(hasExtra ? renderMarkdown(extra) : '');
 	let expanded = $state(false);
 
 	const time = $derived(formatTime(event.timestamp));
@@ -204,9 +321,15 @@
 		<span class="text-base-content/40 text-[10px]">{time}</span>
 	</header>
 
-	{#if body}
-		<pre
-			class="text-base-content/85 m-0 overflow-x-auto font-sans text-sm leading-relaxed whitespace-pre-wrap">{body}</pre>
+	{#if parsedBody}
+		<!-- Tailwind arbitrary variants style the rendered markdown without
+		     pulling in the @tailwindcss/typography plugin. `not(pre_code)` keeps
+		     inline code visually distinct from fenced blocks. -->
+		<div
+			class="markdown-body text-base-content/85 m-0 overflow-x-auto font-sans text-sm leading-relaxed [&_p]:my-1.5 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_a]:underline [&_a]:text-sky-300 [&_h1]:mt-2 [&_h1]:mb-1 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:mt-2 [&_h2]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mt-1.5 [&_h3]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold [&_blockquote]:my-1 [&_blockquote]:border-l-2 [&_blockquote]:border-base-content/30 [&_blockquote]:pl-2 [&_blockquote]:italic [&_blockquote]:text-base-content/70 [&_hr]:my-2 [&_hr]:border-base-content/20 [&_pre]:bg-base-300/30 [&_pre]:my-1.5 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:p-2 [&_pre]:font-mono [&_pre]:text-[11px] [&_pre]:leading-relaxed [&_code:not(pre_code)]:bg-base-300/40 [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:px-1 [&_code:not(pre_code)]:py-0.5 [&_code:not(pre_code)]:font-mono [&_code:not(pre_code)]:text-[0.9em]"
+		>
+			{@html parsedBody}
+		</div>
 	{/if}
 
 	{#if hasExtra}
@@ -218,8 +341,11 @@
 			{expanded ? 'hide details' : 'show details'}
 		</button>
 		{#if expanded}
-			<pre
-				class="text-base-content/70 bg-base-300/30 mt-1 overflow-x-auto rounded p-2 text-[11px]">{extra}</pre>
+			<div
+				class="markdown-body text-base-content/70 bg-base-300/30 mt-1 overflow-x-auto rounded p-2 text-[11px] [&_p]:my-1 [&_pre]:bg-base-300/50 [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:p-2 [&_pre]:font-mono [&_pre]:text-[11px] [&_code:not(pre_code)]:bg-base-300/50 [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:px-1 [&_code:not(pre_code)]:font-mono"
+			>
+				{@html parsedExtra}
+			</div>
 		{/if}
 	{/if}
 </article>

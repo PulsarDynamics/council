@@ -53,3 +53,4 @@ providers.toml
 **/providers.toml
 !agents/providers.toml.example
 !.config/council/
+Council Chamber-1/
